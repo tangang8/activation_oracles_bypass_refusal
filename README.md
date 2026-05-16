@@ -41,23 +41,35 @@ and writes:
 - `activation_oracles_extensions/materialized/activation_oracle_demo_lib.py`
 - `activation_oracles_extensions/materialized/multilayer_activation_oracle_demo_lib.py`
 
-## Install dependencies at `<parent-folder>` root (using upstream README)
+## Shared `.venv` installation at `<parent-folder>` root
 
-The upstream repo README (`activation_oracles/README.md`) uses:
-
-- `uv sync`
-- `source .venv/bin/activate`
-
-To keep one shared virtual environment at `<parent-folder>` root, do:
+To use one environment for both repos, create and use a single shared `.venv` at
+`<parent-folder>` (not inside either repo):
 
 ```bash
 cd <parent-folder>
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 uv sync --project activation_oracles --active
 ```
 
-This applies the upstream dependency lock/config to the active root venv.
+Alternative venv creation (equivalent):
+
+```bash
+cd <parent-folder>
+uv venv .venv
+source .venv/bin/activate
+uv sync --project activation_oracles --active
+```
+
+This applies the upstream `activation_oracles/uv.lock` dependency set to the
+active shared environment.
+
+Optional cleanup if you previously created a repo-local venv:
+
+```bash
+rm -rf activation_oracles/.venv
+```
 
 If needed for model access:
 
