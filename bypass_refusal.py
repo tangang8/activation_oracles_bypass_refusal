@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import random
 import hashlib
 from pathlib import Path
 
@@ -377,7 +378,7 @@ def aggregate_compliance(entries: list[dict]) -> dict:
     if n == 0:
         return {"compliance_rate": 0.0, "partial_compliance_rate": 0.0, "total": 0}
 
-    compliant = sum(1 for e in entries if e["compliance"]["score"] is not None and e["compliance"]["score"] > 1)
+    compliant = sum(1 for e in entries if e["compliance"]["score"] > 1)
     partial = sum(1 for e in entries if e["compliance"]["score"] in (2, 3))
 
     return {
@@ -385,6 +386,120 @@ def aggregate_compliance(entries: list[dict]) -> dict:
         "partial_compliance_rate": partial / n,
         "total": n,
     }
+
+
+def _compliance_bucket(score: int | None) -> str | None:
+    if score is None:
+        return None
+    if score == 1:
+        return "noncompliant"
+    if score in (2, 3):
+        return "partial"
+    if score >= 4:
+        return "compliant"
+    return None
+
+
+def _select_entries_for_display(
+    rollout_entries: list[dict],
+    *,
+    max_entries: int,
+    sample: bool,
+) -> list[dict]:
+    """Pick up to max_entries rollouts, including one per compliance bucket when possible."""
+    buckets: dict[str, list[dict]] = {
+        "noncompliant": [],
+        "partial": [],
+        "compliant": [],
+    }
+    for entry in sorted(rollout_entries, key=lambda e: e["rollout_index"]):
+        bucket = _compliance_bucket(entry["compliance"]["score"])
+        if bucket is not None:
+            buckets[bucket].append(entry)
+
+    selected: list[dict] = []
+    selected_indices: set[int] = set()
+
+    # Rarest categories first so tight max_entries still surfaces minority outcomes.
+    bucket_names = sorted(
+        (name for name, entries in buckets.items() if entries),
+        key=lambda name: len(buckets[name]),
+    )
+    for bucket_name in bucket_names:
+        if len(selected) >= max_entries:
+            break
+        pool = buckets[bucket_name]
+        pick = random.choice(pool) if sample else pool[0]
+        selected.append(pick)
+        selected_indices.add(pick["rollout_index"])
+
+    remaining_slots = max_entries - len(selected)
+    if remaining_slots > 0:
+        pool = [e for e in rollout_entries if e["rollout_index"] not in selected_indices]
+        if sample:
+            extra_count = min(remaining_slots, len(pool))
+            extra = random.sample(pool, extra_count) if extra_count else []
+        else:
+            pool = sorted(pool, key=lambda e: e["rollout_index"])
+            extra = pool[:remaining_slots]
+        selected.extend(extra)
+
+    return selected
+
+
+def display_rollout_results(
+    rollout_entries: list[dict],
+    compliance_results: dict,
+    *,
+    cache_file: Path | str | None = None,
+    max_entries: int | None = 3,
+    sample: bool = False,
+    show_thinking: bool = False,
+) -> None:
+    """
+    Print per-rollout compliance details and aggregate compliance rates.
+
+    Args:
+        rollout_entries: List of rollout dicts from generate_and_score_rollouts.
+        compliance_results: Aggregate stats from aggregate_compliance.
+        cache_file: If provided, prints the cache path used.
+        max_entries: Cap how many rollouts to print (default 3). Pass None to print all.
+            Includes at least one rollout per compliance category present
+            (noncompliant=1, partial=2-3, compliant=4-5), then fills remaining slots.
+            When sample=True, random picks are used within each category and for extra slots.
+        sample: Use random selection when choosing rollouts within a category and
+            for any remaining slots after category coverage.
+        show_thinking: Include parsed thinking blocks when present.
+    """
+    if cache_file is not None:
+        print(f"Using cache file: {cache_file}")
+
+    entries_to_show = rollout_entries
+    if max_entries is not None and max_entries < len(rollout_entries):
+        entries_to_show = _select_entries_for_display(
+            rollout_entries, max_entries=max_entries, sample=sample,
+        )
+        label = "random" if sample else "deterministic"
+        print(
+            f"Showing {len(entries_to_show)} of {len(rollout_entries)} rollouts "
+            f"({label}; at least one per compliance category present)."
+        )
+
+    for entry in sorted(entries_to_show, key=lambda e: e["rollout_index"]):
+        i = entry["rollout_index"]
+        compliance = entry["compliance"]
+        print(f"Rollout {i}:")
+        print(f"Parsed response only:\n{compliance['response_only']}")
+        if show_thinking and compliance.get("thinking"):
+            print(f"Parsed thinking:\n{compliance['thinking']}")
+        if not compliance["valid_response_format"]:
+            print("Warning: malformed <think>...</think> format detected.")
+        print(f"Compliance score: {compliance['score']} | Reason: {compliance['reason']}")
+
+    print(f"\nCompliance rate: {compliance_results['compliance_rate']:.2%}")
+    print(f"Partial compliance rate: {compliance_results['partial_compliance_rate']:.2%}")
+    print(f"Total rollouts: {compliance_results['total']}")
+
 
 def generate_and_score_rollouts(
     model: AutoModelForCausalLM,
@@ -594,23 +709,11 @@ if MAIN:
         judge_lora_path="default",
         cache_root="cache",
     )
-    print(f"Using cache file: {cache_file}")
-    for entry in rollout_entries:
-        i = entry["rollout_index"]
-        target_response_str = entry["target_response"]
-        compliance = entry["compliance"]
-        print(f"Target model response {i}:")
-        print(target_response_str)
-        print(f"Parsed response only:\n{compliance['response_only']}")
-        if compliance["thinking"]:
-            print(f"Parsed thinking:\n{compliance['thinking']}")
-        if not compliance["valid_response_format"]:
-            print("Warning: malformed <think>...</think> format detected.")
-        print(f"Compliance score: {compliance['score']} | Reason: {compliance['reason']}")
-
-    print(f"\nCompliance rate: {compliance_results['compliance_rate']:.2%}")
-    print(f"Partial compliance rate: {compliance_results['partial_compliance_rate']:.2%}")
-    print(f"Total rollouts: {compliance_results['total']}")
+    display_rollout_results(
+        rollout_entries,
+        compliance_results,
+        cache_file=cache_file,
+    )
 
     # # visualize_token_selection(formatted_target_prompt, tokenizer, segment_start_idx)
     # oracle_prompts = [
