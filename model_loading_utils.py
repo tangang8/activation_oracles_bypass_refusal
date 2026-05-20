@@ -25,7 +25,7 @@ def load_tokenizer(model_name: str, hf_token: str | None = None):
 def load_causal_lm(
     model_name: str,
     torch_dtype: torch.dtype = torch.bfloat16,
-    device_map: str = "auto",
+    device_map: str | dict[str, str] | None = "auto",
     hf_token: str | None = None,
 ):
     kwargs = {"device_map": device_map, "torch_dtype": torch_dtype}
@@ -54,7 +54,7 @@ def load_model_stack(
     model_name: str,
     adapter_specs: list[AdapterSpec] | None = None,
     torch_dtype: torch.dtype = torch.bfloat16,
-    device_map: str = "auto",
+    device_map: str | dict[str, str] | None = "auto",
     hf_token: str | None = None,
 ):
     print(f"Loading tokenizer: {model_name}")

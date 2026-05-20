@@ -105,14 +105,18 @@ def save_rollouts_html(
     for entry in rollout_entries:
         idx = entry["rollout_index"]
         compliance = entry["compliance"]
+        target_format = entry.get("target_format", {})
         cards.append(
             f"""
             <section class="card" data-rollout="{idx}">
               <h2>Rollout {idx}</h2>
+              <p><strong>Judge Instruction:</strong> {html.escape(str(compliance.get("judge_instruction_file", "N/A")))}</p>
               <p><strong>Score:</strong> {html.escape(str(compliance.get("score")))} |
                  <strong>Reason:</strong> {html.escape(str(compliance.get("reason", "")))}</p>
-              <details open><summary>Parsed Response</summary><pre>{html.escape(str(compliance.get("response_only", "")))}</pre></details>
-              <details><summary>Thinking</summary><pre>{html.escape(str(compliance.get("thinking", "")))}</pre></details>
+              <details open><summary>Target Parsed Response</summary><pre>{html.escape(str(target_format.get("response_only", "")))}</pre></details>
+              <details><summary>Target Thinking</summary><pre>{html.escape(str(target_format.get("thinking", "")))}</pre></details>
+              <details><summary>Judge Parsed Response</summary><pre>{html.escape(str(compliance.get("response_only", "")))}</pre></details>
+              <details><summary>Judge Thinking</summary><pre>{html.escape(str(compliance.get("thinking", "")))}</pre></details>
             </section>
             """
         )

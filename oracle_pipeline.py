@@ -1,6 +1,8 @@
 import sys
 import json
+from contextlib import nullcontext
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable
 
 import torch
@@ -17,6 +19,8 @@ from nl_probes.utils.common import layer_percent_to_layer
 from nl_probes.utils.dataset_utils import create_training_datapoint
 from nl_probes.utils.eval import run_evaluation
 from cache_utils import load_json, oracle_cache_file_path, write_json
+from distributed_utils import DistributedContext, all_gather_objects, broadcast_object
+from perf_utils import PerfLogger
 
 def _find_subsequence_start(token_ids: list[int], pattern_ids: list[int]) -> int | None:
     if not pattern_ids or len(pattern_ids) > len(token_ids):
@@ -258,6 +262,8 @@ def run_oracle_batched(
     token_end_idx: int | None = None,
     # New fourth mode ("token_points")
     token_point_indices_by_target: list[list[int]] | None = None,
+    dist_ctx: DistributedContext | None = None,
+    perf: PerfLogger | None = None,
 ) -> list[dict[str, Any]]:
     """
     Batched single-layer oracle evaluation over target sequences.
@@ -389,6 +395,14 @@ def run_oracle_batched(
 
     target_model_name = model.config._name_or_path
     oracle_model_name = model.config._name_or_path
+    is_main = dist_ctx is None or not dist_ctx.enabled or dist_ctx.is_main
+    rank = dist_ctx.rank if dist_ctx is not None else 0
+    world_size = dist_ctx.world_size if dist_ctx is not None else 1
+
+    def maybe_log(msg: str) -> None:
+        if is_main:
+            print(msg)
+
     cache_paths: list[Path] = []
     cached_by_target: list[list[dict[str, Any]]] = []
     cached_counts_by_target: list[int] = []
@@ -435,15 +449,26 @@ def run_oracle_batched(
     full_hits = sum(1 for _, _, missing_count in cache_status_by_target if missing_count == 0)
     partial_hits = sum(1 for _, cached_count, missing_count in cache_status_by_target if cached_count > 0 and missing_count > 0)
     misses = sum(1 for _, cached_count, _ in cache_status_by_target if cached_count == 0)
-    print(
+    if perf is not None:
+        missing_repeats = sum(missing_count for _, _, missing_count in cache_status_by_target)
+        perf.log_event(
+            "cache/oracle_status",
+            {
+                "cache/oracle_full_hits": float(full_hits),
+                "cache/oracle_partial_hits": float(partial_hits),
+                "cache/oracle_misses": float(misses),
+                "cache/oracle_missing_repeats": float(missing_repeats),
+                "cache/oracle_targets": float(len(cache_status_by_target)),
+            },
+            metadata={"rank": rank, "world_size": world_size},
+        )
+    maybe_log(
         f"[oracle cache] targets={len(cache_status_by_target)} "
         f"requested_repeats={oracle_repeats} full_hits={full_hits} partial_hits={partial_hits} misses={misses}"
     )
     for target_idx, cached_count, missing_count in cache_status_by_target:
         if missing_count > 0:
-            print(
-                f"[oracle cache] target_idx={target_idx}: cached={cached_count}, missing={missing_count}"
-            )
+            maybe_log(f"[oracle cache] target_idx={target_idx}: cached={cached_count}, missing={missing_count}")
 
     missing_indices = [i for i, cached_count in enumerate(cached_counts_by_target) if cached_count < oracle_repeats]
     if not missing_indices:
@@ -452,164 +477,242 @@ def run_oracle_batched(
             for i in range(len(cached_by_target))
         ]
 
+    if dist_ctx is None or not dist_ctx.enabled:
+        assigned_missing_indices = missing_indices
+    else:
+        assigned_missing_indices = [
+            target_idx
+            for local_idx, target_idx in enumerate(missing_indices)
+            if local_idx % dist_ctx.world_size == dist_ctx.rank
+        ]
+
     model_name = model.config._name_or_path
     act_layer = layer_percent_to_layer(model_name, layer_percent)
     act_layers = [act_layer]
 
-    if target_lora_path is not None:
-        model.set_adapter(target_lora_path)
-    else:
-        model.set_adapter("default")
+    local_updates: dict[int, list[dict[str, Any]]] = {}
+    if assigned_missing_indices:
+        if target_lora_path is not None:
+            model.set_adapter(target_lora_path)
+        else:
+            model.set_adapter("default")
 
-    missing_specs = [combined_specs[i] for i in missing_indices]
-    missing_texts = [combined_texts[i] for i in missing_indices]
-    missing_token_point_indices = [token_point_indices_by_target[i] for i in missing_indices]
-    cached_counts_by_missing_target = [cached_counts_by_target[i] for i in missing_indices]
-    total_missing_repeats = sum(oracle_repeats - cached_count for cached_count in cached_counts_by_missing_target)
+        assigned_specs = [combined_specs[i] for i in assigned_missing_indices]
+        assigned_texts = [combined_texts[i] for i in assigned_missing_indices]
+        assigned_token_point_indices = [token_point_indices_by_target[i] for i in assigned_missing_indices]
+        assigned_cached_counts = [cached_counts_by_target[i] for i in assigned_missing_indices]
 
-    inputs_bl = _encode_formatted_prompts(tokenizer, missing_texts, device)
-    submodules = {layer: get_hf_submodule(model, layer) for layer in act_layers}
-    acts_by_layer = collect_activations_multiple_layers(
-        model=model,
-        submodules=submodules,
-        inputs_BL=inputs_bl,
-        min_offset=None,
-        max_offset=None,
-    )
-
-    seq_len = int(inputs_bl["input_ids"].shape[1])
-    attn = inputs_bl["attention_mask"]
-    left_pads = [seq_len - int(attn[i].sum().item()) for i in range(attn.shape[0])]
-    target_input_ids_by_target = [
-        inputs_bl["input_ids"][i, left_pads[i] :].tolist()
-        for i in range(attn.shape[0])
-    ]
-
-    injection_submodule = get_hf_submodule(model, injection_layer)
-    updated_targets = 0
-    for local_target_idx, spec in enumerate(missing_specs):
-        target_input_ids = target_input_ids_by_target[local_target_idx]
-        left_pad = left_pads[local_target_idx]
-        prompt_start, prompt_end = spec["prompt_segment"]
-        rollout_start, rollout_end = spec["rollout_segment"]
-        total_tokens = len(target_input_ids)
-        repeat_start = cached_counts_by_missing_target[local_target_idx]
-
-        target_oracle_inputs = []
-
-        def add_probe(
-            positions_rel: list[int],
-            probe_kind: str,
-            repeat_idx: int,
-            token_index: int | None = None,
-        ) -> None:
-            if not positions_rel:
-                return
-            positions_abs = [left_pad + p for p in positions_rel]
-            acts_bd = acts_by_layer[act_layer][local_target_idx, positions_abs]
-            meta = {
-                "target_idx": local_target_idx,
-                "probe_kind": probe_kind,
-                "repeat_idx": repeat_idx,
-                "token_index": token_index,
-            }
-            dp = create_training_datapoint(
-                datapoint_type="N/A",
-                prompt=oracle_prompt,
-                target_response="N/A",
-                layer=act_layer,
-                num_positions=len(positions_rel),
-                tokenizer=tokenizer,
-                acts_BD=acts_bd,
-                feature_idx=-1,
-                context_input_ids=target_input_ids,
-                context_positions=positions_rel,
-                ds_label="N/A",
-                meta_info=meta,
+        with (
+            perf.track(
+                "oracle/collect_activations",
+                {
+                    "assigned_targets": len(assigned_texts),
+                    "layer_percent": layer_percent,
+                    "act_layer": act_layer,
+                    "rank": rank,
+                    "world_size": world_size,
+                },
             )
-            target_oracle_inputs.append(dp)
-
-        for repeat_idx in range(repeat_start, oracle_repeats):
-            if "full_seq" in oracle_input_types:
-                add_probe(list(range(total_tokens)), probe_kind="full_seq", repeat_idx=repeat_idx)
-            if "segment" in oracle_input_types:
-                seg_start = segment_start_idx
-                seg_end = total_tokens if segment_end_idx is None else min(segment_end_idx, total_tokens)
-                if seg_start < 0:
-                    raise ValueError(f"segment_start_idx ({seg_start}) must be >= 0")
-                if seg_start >= seg_end:
-                    raise ValueError(f"segment_start_idx ({seg_start}) must be < segment_end_idx ({seg_end})")
-                add_probe(list(range(seg_start, seg_end)), probe_kind="segment", repeat_idx=repeat_idx)
-            if "prompt_segment" in oracle_input_types:
-                add_probe(list(range(prompt_start, prompt_end)), probe_kind="prompt_segment", repeat_idx=repeat_idx)
-            if "rollout_segment" in oracle_input_types:
-                add_probe(list(range(rollout_start, rollout_end)), probe_kind="rollout_segment", repeat_idx=repeat_idx)
-            if "tokens" in oracle_input_types:
-                tok_start = token_start_idx
-                tok_end = total_tokens if token_end_idx is None else min(token_end_idx, total_tokens)
-                for token_idx in range(tok_start, tok_end):
-                    add_probe([token_idx], probe_kind="tokens", repeat_idx=repeat_idx, token_index=token_idx)
-            if "token_points" in oracle_input_types:
-                for token_idx in sorted(set(missing_token_point_indices[local_target_idx])):
-                    if token_idx < 0 or token_idx >= total_tokens:
-                        continue
-                    add_probe([token_idx], probe_kind="token_points", repeat_idx=repeat_idx, token_index=token_idx)
-
-        target_outputs: dict[int, dict[str, Any]] = {
-            repeat_idx: {
-                "combined_text": spec["combined_text"],
-                "points": spec,
-                "full_seq": [],
-                "segment": [],
-                "prompt_segment": [],
-                "rollout_segment": [],
-                "tokens": {},
-                "token_points": {},
-            }
-            for repeat_idx in range(repeat_start, oracle_repeats)
-        }
-
-        if target_oracle_inputs:
-            target_responses = run_evaluation(
-                eval_data=target_oracle_inputs,
+            if perf
+            else nullcontext()
+        ) as act_metrics:
+            inputs_bl = _encode_formatted_prompts(tokenizer, assigned_texts, device)
+            submodules = {layer: get_hf_submodule(model, layer) for layer in act_layers}
+            acts_by_layer = collect_activations_multiple_layers(
                 model=model,
-                tokenizer=tokenizer,
-                submodule=injection_submodule,
-                device=device,
-                dtype=torch.bfloat16,
-                global_step=0,
-                lora_path=oracle_lora_path,
-                eval_batch_size=eval_batch_size,
-                steering_coefficient=steering_coefficient,
-                generation_kwargs=generation_kwargs,
-                verbose=False,
+                submodules=submodules,
+                inputs_BL=inputs_bl,
+                min_offset=None,
+                max_offset=None,
             )
-            for r in target_responses:
-                repeat_idx = int(r.meta_info["repeat_idx"])
-                probe_kind = str(r.meta_info["probe_kind"])
-                token_index = r.meta_info.get("token_index")
-                repeat_entry = target_outputs[repeat_idx]
-                if probe_kind in ("full_seq", "segment", "prompt_segment", "rollout_segment"):
-                    repeat_entry[probe_kind].append(r.api_response)
-                elif probe_kind in ("tokens", "token_points"):
-                    token_key = int(token_index)
-                    probe_bucket = repeat_entry[probe_kind]
-                    if token_key not in probe_bucket:
-                        probe_bucket[token_key] = []
-                    probe_bucket[token_key].append(r.api_response)
+            if perf:
+                act_metrics["oracle/assigned_targets"] = float(len(assigned_texts))
 
-        global_idx = missing_indices[local_target_idx]
-        append_entries = [target_outputs[idx] for idx in sorted(target_outputs.keys())]
-        cached_by_target[global_idx].extend(append_entries)
-        write_json(cache_paths[global_idx], cached_by_target[global_idx])
-        updated_targets += 1
-        print(
-            f"[oracle cache] updated target_idx={global_idx} "
-            f"(added_repeats={len(append_entries)}, total_cached={len(cached_by_target[global_idx])})"
-        )
-    print(f"[oracle cache] updated cache files for {updated_targets} target(s)")
+        seq_len = int(inputs_bl["input_ids"].shape[1])
+        attn = inputs_bl["attention_mask"]
+        left_pads = [seq_len - int(attn[i].sum().item()) for i in range(attn.shape[0])]
+        target_input_ids_by_target = [
+            inputs_bl["input_ids"][i, left_pads[i] :].tolist()
+            for i in range(attn.shape[0])
+        ]
 
-    return [
-        _aggregate_oracle_repeat_entries(cached_by_target[i][:oracle_repeats])
-        for i in range(len(cached_by_target))
-    ]
+        injection_submodule = get_hf_submodule(model, injection_layer)
+        for local_target_idx, spec in enumerate(assigned_specs):
+            global_target_idx = assigned_missing_indices[local_target_idx]
+            target_input_ids = target_input_ids_by_target[local_target_idx]
+            left_pad = left_pads[local_target_idx]
+            prompt_start, prompt_end = spec["prompt_segment"]
+            rollout_start, rollout_end = spec["rollout_segment"]
+            total_tokens = len(target_input_ids)
+            repeat_start = assigned_cached_counts[local_target_idx]
+
+            target_oracle_inputs = []
+
+            def add_probe(
+                positions_rel: list[int],
+                probe_kind: str,
+                repeat_idx: int,
+                token_index: int | None = None,
+            ) -> None:
+                if not positions_rel:
+                    return
+                positions_abs = [left_pad + p for p in positions_rel]
+                acts_bd = acts_by_layer[act_layer][local_target_idx, positions_abs]
+                meta = {
+                    "target_idx": global_target_idx,
+                    "probe_kind": probe_kind,
+                    "repeat_idx": repeat_idx,
+                    "token_index": token_index,
+                }
+                dp = create_training_datapoint(
+                    datapoint_type="N/A",
+                    prompt=oracle_prompt,
+                    target_response="N/A",
+                    layer=act_layer,
+                    num_positions=len(positions_rel),
+                    tokenizer=tokenizer,
+                    acts_BD=acts_bd,
+                    feature_idx=-1,
+                    context_input_ids=target_input_ids,
+                    context_positions=positions_rel,
+                    ds_label="N/A",
+                    meta_info=meta,
+                )
+                target_oracle_inputs.append(dp)
+
+            for repeat_idx in range(repeat_start, oracle_repeats):
+                if "full_seq" in oracle_input_types:
+                    add_probe(list(range(total_tokens)), probe_kind="full_seq", repeat_idx=repeat_idx)
+                if "segment" in oracle_input_types:
+                    seg_start = segment_start_idx
+                    seg_end = total_tokens if segment_end_idx is None else min(segment_end_idx, total_tokens)
+                    if seg_start < 0:
+                        raise ValueError(f"segment_start_idx ({seg_start}) must be >= 0")
+                    if seg_start >= seg_end:
+                        raise ValueError(f"segment_start_idx ({seg_start}) must be < segment_end_idx ({seg_end})")
+                    add_probe(list(range(seg_start, seg_end)), probe_kind="segment", repeat_idx=repeat_idx)
+                if "prompt_segment" in oracle_input_types:
+                    add_probe(list(range(prompt_start, prompt_end)), probe_kind="prompt_segment", repeat_idx=repeat_idx)
+                if "rollout_segment" in oracle_input_types:
+                    add_probe(list(range(rollout_start, rollout_end)), probe_kind="rollout_segment", repeat_idx=repeat_idx)
+                if "tokens" in oracle_input_types:
+                    tok_start = token_start_idx
+                    tok_end = total_tokens if token_end_idx is None else min(token_end_idx, total_tokens)
+                    for token_idx in range(tok_start, tok_end):
+                        add_probe([token_idx], probe_kind="tokens", repeat_idx=repeat_idx, token_index=token_idx)
+                if "token_points" in oracle_input_types:
+                    for token_idx in sorted(set(assigned_token_point_indices[local_target_idx])):
+                        if token_idx < 0 or token_idx >= total_tokens:
+                            continue
+                        add_probe([token_idx], probe_kind="token_points", repeat_idx=repeat_idx, token_index=token_idx)
+
+            target_outputs: dict[int, dict[str, Any]] = {
+                repeat_idx: {
+                    "combined_text": spec["combined_text"],
+                    "points": spec,
+                    "full_seq": [],
+                    "segment": [],
+                    "prompt_segment": [],
+                    "rollout_segment": [],
+                    "tokens": {},
+                    "token_points": {},
+                }
+                for repeat_idx in range(repeat_start, oracle_repeats)
+            }
+
+            if target_oracle_inputs:
+                with (
+                    perf.track(
+                        "oracle/run_evaluation",
+                        {
+                            "eval_batch_size": eval_batch_size,
+                            "num_probe_inputs": len(target_oracle_inputs),
+                            "oracle_repeats": oracle_repeats,
+                            "max_new_tokens": generation_kwargs.get("max_new_tokens"),
+                            "rank": rank,
+                            "world_size": world_size,
+                        },
+                    )
+                    if perf
+                    else nullcontext()
+                ) as eval_metrics:
+                    eval_t0 = perf_counter()
+                    target_responses = run_evaluation(
+                        eval_data=target_oracle_inputs,
+                        model=model,
+                        tokenizer=tokenizer,
+                        submodule=injection_submodule,
+                        device=device,
+                        dtype=torch.bfloat16,
+                        global_step=0,
+                        lora_path=oracle_lora_path,
+                        eval_batch_size=eval_batch_size,
+                        steering_coefficient=steering_coefficient,
+                        generation_kwargs=generation_kwargs,
+                        verbose=False,
+                        progress_desc=f"Evaluating model (target_idx={global_target_idx})",
+                    )
+                    if perf:
+                        elapsed = max(perf_counter() - eval_t0, 1e-12)
+                        eval_metrics["throughput/probe_inputs_per_second"] = (
+                            float(len(target_oracle_inputs)) / elapsed
+                        )
+                        eval_metrics["throughput/targets_per_second"] = 1.0 / elapsed
+                for r in target_responses:
+                    repeat_idx = int(r.meta_info["repeat_idx"])
+                    probe_kind = str(r.meta_info["probe_kind"])
+                    token_index = r.meta_info.get("token_index")
+                    repeat_entry = target_outputs[repeat_idx]
+                    if probe_kind in ("full_seq", "segment", "prompt_segment", "rollout_segment"):
+                        repeat_entry[probe_kind].append(r.api_response)
+                    elif probe_kind in ("tokens", "token_points"):
+                        token_key = int(token_index)
+                        probe_bucket = repeat_entry[probe_kind]
+                        if token_key not in probe_bucket:
+                            probe_bucket[token_key] = []
+                        probe_bucket[token_key].append(r.api_response)
+
+            append_entries = [target_outputs[idx] for idx in sorted(target_outputs.keys())]
+            local_updates[global_target_idx] = append_entries
+            if append_entries:
+                # Checkpoint each completed target immediately so long runs can resume
+                # even if interrupted before the final gather/merge phase.
+                checkpoint_entries = cached_by_target[global_target_idx] + append_entries
+                write_json(cache_paths[global_target_idx], checkpoint_entries)
+                maybe_log(
+                    f"[oracle cache] checkpoint target_idx={global_target_idx} "
+                    f"(added_repeats={len(append_entries)}, checkpoint_total={len(checkpoint_entries)})"
+                )
+
+    if dist_ctx is not None and dist_ctx.enabled:
+        gathered_updates = all_gather_objects(dist_ctx, local_updates)
+    else:
+        gathered_updates = [local_updates]
+
+    final_results: list[dict[str, Any]] | None = None
+    if is_main:
+        updated_targets = 0
+        for rank_updates in gathered_updates:
+            if not isinstance(rank_updates, dict):
+                continue
+            for global_idx, append_entries in rank_updates.items():
+                if not append_entries:
+                    continue
+                cached_by_target[global_idx].extend(append_entries)
+                write_json(cache_paths[global_idx], cached_by_target[global_idx])
+                updated_targets += 1
+                maybe_log(
+                    f"[oracle cache] updated target_idx={global_idx} "
+                    f"(added_repeats={len(append_entries)}, total_cached={len(cached_by_target[global_idx])})"
+                )
+        maybe_log(f"[oracle cache] updated cache files for {updated_targets} target(s)")
+
+        final_results = [
+            _aggregate_oracle_repeat_entries(cached_by_target[i][:oracle_repeats])
+            for i in range(len(cached_by_target))
+        ]
+
+    if dist_ctx is not None and dist_ctx.enabled:
+        final_results = broadcast_object(dist_ctx, final_results, src=0)
+
+    return final_results

@@ -38,7 +38,7 @@ def _cache_prompt_file_name(prompt_text: str) -> str:
     return f"{prompt_preview}_{prompt_hash}.json"
 
 
-def _cache_base_dir(
+def _target_rollout_base_dir(
     cache_root: str,
     target_model_name: str,
     target_lora_name: str,
@@ -59,37 +59,67 @@ def _preview_hash_name(text: str, preview_len: int = 48) -> str:
     return f"{preview}_{digest}"
 
 
-def cache_file_path(
+def target_rollout_cache_file_path(
+    cache_root: str,
+    target_model_name: str,
+    target_lora_path: str | None,
+    generation_kwargs: dict,
+    user_prompt: str,
+) -> Path:
+    """
+    Build target rollout cache file path (independent of judging).
+
+    Layout:
+      cache/target_{target_model}[_lora-{target_lora}]/
+      target_rollouts_temp-{temperature}/
+      {prompt_preview_hash}.json
+    """
+    target_lora_name = target_lora_path or "default"
+    prompt_file = _cache_prompt_file_name(user_prompt)
+    cache_dir = _target_rollout_base_dir(
+        cache_root=cache_root,
+        target_model_name=target_model_name,
+        target_lora_name=target_lora_name,
+        generation_kwargs=generation_kwargs,
+    )
+    return cache_dir / prompt_file
+
+
+def judge_cache_file_path(
     cache_root: str,
     target_model_name: str,
     target_lora_path: str | None,
     judge_model_name: str,
     judge_lora_path: str | None,
     generation_kwargs: dict,
+    judge_instruction_stem: str,
     user_prompt: str,
 ) -> Path:
     """
-    Build target rollout cache file path.
+    Build judged rollout cache file path.
 
     Layout:
       cache/target_{target_model}[_lora-{target_lora}]/
-      target_rollouts_temp-{temperature}/judge_{judge_model}[_lora-{judge_lora}]/
-      {prompt_preview_hash}.json
+      judge_{judge_model}[_lora-{judge_lora}]_temp-{temperature}/
+      {judge_instruction_stem}/target_rollouts_judged/{prompt_preview_hash}.json
     """
-    target_lora_name = target_lora_path or "default"
-    run_subdir = _run_subdir_path(
+    target_dir = _model_bundle_dir("target", target_model_name, target_lora_path or "default")
+    judge_dir = _run_subdir_path(
         role_prefix="judge",
         model_name=judge_model_name,
         lora_path=judge_lora_path,
     )
     prompt_file = _cache_prompt_file_name(user_prompt)
-    cache_dir = _cache_base_dir(
-        cache_root=cache_root,
-        target_model_name=target_model_name,
-        target_lora_name=target_lora_name,
-        generation_kwargs=generation_kwargs,
+    temp = generation_kwargs.get("temperature")
+    judge_temp_dir = Path(f"{judge_dir}_temp-{temp}")
+    return (
+        Path(cache_root)
+        / target_dir
+        / judge_temp_dir
+        / _sanitize_for_path(judge_instruction_stem)
+        / "target_rollouts_judged"
+        / prompt_file
     )
-    return cache_dir / run_subdir / prompt_file
 
 
 def oracle_cache_file_path(
@@ -146,4 +176,7 @@ def load_json(cache_file: Path) -> Any | None:
 
 def write_json(cache_file: Path, value: Any) -> None:
     cache_file.parent.mkdir(parents=True, exist_ok=True)
-    cache_file.write_text(json.dumps(value, indent=2, ensure_ascii=True))
+    payload = json.dumps(value, indent=2, ensure_ascii=True)
+    tmp_file = cache_file.with_suffix(f"{cache_file.suffix}.tmp")
+    tmp_file.write_text(payload)
+    tmp_file.replace(cache_file)
