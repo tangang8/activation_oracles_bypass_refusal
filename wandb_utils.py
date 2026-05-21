@@ -53,7 +53,11 @@ def log_oracle_metrics(run: Any, oracle_results: list[dict[str, Any]], elapsed_s
         return
     deterministic_schema = bool(oracle_results) and isinstance(oracle_results[0], dict) and "oracle_response" in oracle_results[0]
     if deterministic_schema:
-        repeats_observed = [1 for _ in oracle_results]
+        grouped_counts: dict[str, int] = {}
+        for entry in oracle_results:
+            target_key = str(entry.get("target_rollout_index", "__single_target__"))
+            grouped_counts[target_key] = grouped_counts.get(target_key, 0) + 1
+        repeats_observed = list(grouped_counts.values())
     else:
         repeats_observed = [
             int(result.get("oracle_repeats", len(result.get("full_seq", [])) or 0))

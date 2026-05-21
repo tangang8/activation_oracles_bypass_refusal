@@ -136,6 +136,14 @@ def _leaf_cell(leaf: Any, field: str, default: str = "") -> str:
     return html.escape(str(value))
 
 
+def _entry_rollout_label(entry: dict[str, Any], fallback: int) -> str:
+    if "rollout_index" in entry:
+        return str(entry["rollout_index"])
+    if "oracle_rollout_index" in entry:
+        return str(entry["oracle_rollout_index"])
+    return str(fallback)
+
+
 def save_rollouts_html(
     rollout_entries: list[dict[str, Any]],
     compliance_results: dict[str, Any],
@@ -233,11 +241,12 @@ def save_oracle_rollouts_html(
 
         cards = []
         for i, entry in enumerate(results):
-            rollout_index = entry.get("rollout_index", i)
+            rollout_index = _entry_rollout_label(entry, i)
             target_format = entry.get("target_format", {})
             oracle_response = entry.get("oracle_response", {})
             oracle_format = entry.get("oracle_format", {})
             compliance = entry.get("compliance", {})
+            formatted_target_prompt = entry.get("formatted_target_prompt", "")
 
             scalar_probe_sections = []
             for probe_kind in ("full_seq", "segment", "prompt_segment", "rollout_segment"):
@@ -282,6 +291,7 @@ def save_oracle_rollouts_html(
                   <h2>Rollout {html.escape(str(rollout_index))}</h2>
                   <details open><summary>Target Parsed Response</summary><pre>{html.escape(str(target_format.get("response_only", "")))}</pre></details>
                   <details><summary>Target Thinking</summary><pre>{html.escape(str(target_format.get("thinking", "")))}</pre></details>
+                  <details><summary>Formatted Target Prompt</summary><pre>{html.escape(str(formatted_target_prompt))}</pre></details>
                   {''.join(scalar_probe_sections)}
                   <details><summary>Token-Point Compliance</summary>
                     <table>
@@ -318,7 +328,7 @@ def save_oracle_rollouts_html(
     <label>Show rollout index:
       <select id="rolloutSelect">
         <option value="all">All</option>
-        {"".join(f"<option value='{html.escape(str(entry.get('rollout_index', i)))}'>{html.escape(str(entry.get('rollout_index', i)))}</option>" for i, entry in enumerate(results))}
+        {"".join(f"<option value='{html.escape(_entry_rollout_label(entry, i))}'>{html.escape(_entry_rollout_label(entry, i))}</option>" for i, entry in enumerate(results))}
       </select>
     </label>
   </div>

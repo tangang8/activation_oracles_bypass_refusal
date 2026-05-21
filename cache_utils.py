@@ -5,14 +5,25 @@ from pathlib import Path
 from typing import Any
 
 
-def _sanitize_for_path(value: str) -> str:
+def sanitize_for_path(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
     return cleaned.strip("._-") or "unknown"
 
 
+def preview_hash_name(
+    text: str,
+    *,
+    preview_len: int = 48,
+    hash_len: int = 16,
+) -> str:
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:hash_len]
+    preview = sanitize_for_path(text[:preview_len])
+    return f"{preview}_{digest}"
+
+
 def _model_bundle_dir(prefix: str, model_name: str, lora_name: str) -> Path:
-    model_name_s = _sanitize_for_path(model_name)
-    lora_name_s = _sanitize_for_path(lora_name)
+    model_name_s = sanitize_for_path(model_name)
+    lora_name_s = sanitize_for_path(lora_name)
     if lora_name_s == "default":
         return Path(f"{prefix}_{model_name_s}")
     return Path(f"{prefix}_{model_name_s}_lora-{lora_name_s}")
@@ -33,9 +44,7 @@ def _rollouts_dir_name(base_name: str, generation_kwargs: dict) -> str:
 
 
 def _cache_prompt_file_name(prompt_text: str) -> str:
-    prompt_hash = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()[:16]
-    prompt_preview = _sanitize_for_path(prompt_text[:48])
-    return f"{prompt_preview}_{prompt_hash}.json"
+    return f"{preview_hash_name(prompt_text, preview_len=48, hash_len=16)}.json"
 
 
 def _target_rollout_base_dir(
@@ -54,9 +63,7 @@ def _target_rollout_base_dir(
 
 
 def _preview_hash_name(text: str, preview_len: int = 48) -> str:
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-    preview = _sanitize_for_path(text[:preview_len])
-    return f"{preview}_{digest}"
+    return preview_hash_name(text, preview_len=preview_len, hash_len=16)
 
 
 def target_rollout_cache_file_path(
@@ -116,7 +123,7 @@ def judge_cache_file_path(
         Path(cache_root)
         / target_dir
         / judge_temp_dir
-        / _sanitize_for_path(judge_instruction_stem)
+        / sanitize_for_path(judge_instruction_stem)
         / "target_rollouts_judged"
         / prompt_file
     )
@@ -202,6 +209,43 @@ def deterministic_oracle_cache_file_path(
     )
 
 
+def oracle_prompt_rollout_cache_file_path(
+    cache_root: str,
+    target_model_name: str,
+    target_lora_path: str | None,
+    oracle_model_name: str,
+    oracle_lora_path: str | None,
+    oracle_generation_kwargs: dict[str, Any],
+    target_prompt: str,
+    oracle_prompt: str,
+) -> Path:
+    """
+    Build prompt-only oracle rollout cache file path.
+
+    Layout:
+      cache/target_{target_model}[_lora-{target_lora}]/
+      oracle_prompt_rollouts_temp-{temperature}/oracle_{oracle_model}[_lora-{oracle_lora}]/
+      {target_prompt_preview_hash}/{oracle_prompt_preview_hash}.json
+    """
+    target_dir = _model_bundle_dir("target", target_model_name, target_lora_path or "default")
+    oracle_rollouts_dir = _rollouts_dir_name("oracle_prompt_rollouts", oracle_generation_kwargs)
+    oracle_run_subdir = _run_subdir_path(
+        role_prefix="oracle",
+        model_name=oracle_model_name,
+        lora_path=oracle_lora_path,
+    )
+    target_prompt_dir = _preview_hash_name(target_prompt)
+    oracle_file = f"{_preview_hash_name(oracle_prompt)}.json"
+    return (
+        Path(cache_root)
+        / target_dir
+        / oracle_rollouts_dir
+        / oracle_run_subdir
+        / target_prompt_dir
+        / oracle_file
+    )
+
+
 def deterministic_oracle_judge_cache_file_path(
     cache_root: str,
     target_model_name: str,
@@ -215,6 +259,7 @@ def deterministic_oracle_judge_cache_file_path(
     oracle_generation_kwargs: dict[str, Any],
     target_prompt: str,
     oracle_prompt: str,
+    oracle_rollouts_dir_base: str = "oracle_rollouts",
 ) -> Path:
     """
     Build judged deterministic oracle rollout cache file path.
@@ -234,7 +279,7 @@ def deterministic_oracle_judge_cache_file_path(
     )
     judge_temp = judge_generation_kwargs.get("temperature")
     judge_temp_dir = Path(f"{judge_dir}_temp-{judge_temp}")
-    oracle_rollouts_dir = _rollouts_dir_name("oracle_rollouts", oracle_generation_kwargs)
+    oracle_rollouts_dir = _rollouts_dir_name(oracle_rollouts_dir_base, oracle_generation_kwargs)
     oracle_run_subdir = _run_subdir_path(
         role_prefix="oracle",
         model_name=oracle_model_name,
@@ -246,7 +291,7 @@ def deterministic_oracle_judge_cache_file_path(
         Path(cache_root)
         / target_dir
         / judge_temp_dir
-        / _sanitize_for_path(judge_instruction_stem)
+        / sanitize_for_path(judge_instruction_stem)
         / "oracle_rollouts_judged"
         / oracle_rollouts_dir
         / oracle_run_subdir

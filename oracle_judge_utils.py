@@ -18,8 +18,16 @@ from rollout_utils import (
 )
 
 
+def _entry_index(entry: dict[str, Any]) -> int:
+    if "rollout_index" in entry:
+        return int(entry["rollout_index"])
+    if "oracle_rollout_index" in entry:
+        return int(entry["oracle_rollout_index"])
+    raise KeyError("Entry is missing both rollout_index and oracle_rollout_index.")
+
+
 def _flatten_oracle_responses(entry: dict[str, Any]) -> list[dict[str, Any]]:
-    rollout_index = int(entry["rollout_index"])
+    rollout_index = _entry_index(entry)
     user_prompt = str(entry.get("target_prompt", ""))
     oracle_response = entry.get("oracle_response", {})
     oracle_format = entry.get("oracle_format", {})
@@ -149,7 +157,7 @@ def _oracle_judge_summary(judged_entries: list[dict[str, Any]]) -> dict[str, Any
     return summary
 
 
-def judge_deterministic_oracle_rollouts(
+def judge_oracle_rollouts(
     judge_model: AutoModelForCausalLM,
     judge_tokenizer: AutoTokenizer,
     oracle_rollout_entries: list[dict[str, Any]],
@@ -163,6 +171,7 @@ def judge_deterministic_oracle_rollouts(
     oracle_model_name: str,
     oracle_lora_path: str | None,
     oracle_generation_kwargs: dict[str, Any],
+    oracle_rollouts_dir_base: str = "oracle_rollouts",
     judge_generation_kwargs: dict[str, Any] | None = None,
     judge_batch_size: int = 8,
     judge_lora_path: str | None = "default",
@@ -189,6 +198,7 @@ def judge_deterministic_oracle_rollouts(
         oracle_generation_kwargs=oracle_generation_kwargs,
         target_prompt=target_prompt,
         oracle_prompt=oracle_prompt,
+        oracle_rollouts_dir_base=oracle_rollouts_dir_base,
     )
 
     loaded = load_json(cache_file)
@@ -198,7 +208,7 @@ def judge_deterministic_oracle_rollouts(
         if not isinstance(entry, dict):
             continue
         try:
-            idx = int(entry["rollout_index"])
+            idx = _entry_index(entry)
         except Exception:
             continue
         existing_by_index[idx] = entry
@@ -206,7 +216,7 @@ def judge_deterministic_oracle_rollouts(
     merged_by_index: dict[int, dict[str, Any]] = {}
     pending_items: list[dict[str, Any]] = []
     for oracle_entry in oracle_rollout_entries:
-        idx = int(oracle_entry["rollout_index"])
+        idx = _entry_index(oracle_entry)
         base_entry = deepcopy(existing_by_index.get(idx, oracle_entry))
         if "compliance" not in base_entry or not isinstance(base_entry["compliance"], dict):
             base_entry["compliance"] = _compliance_shell(oracle_entry)
@@ -335,9 +345,9 @@ def judge_deterministic_oracle_rollouts(
                     merged_by_index[idx]["compliance"] = compliance_root
                 _set_path_leaf(compliance_root, tuple(update["path"]), update["compliance"])
         final_entries = [
-            merged_by_index[int(entry["rollout_index"])]
-            for entry in sorted(oracle_rollout_entries, key=lambda e: int(e["rollout_index"]))
-            if int(entry["rollout_index"]) in merged_by_index
+            merged_by_index[_entry_index(entry)]
+            for entry in sorted(oracle_rollout_entries, key=_entry_index)
+            if _entry_index(entry) in merged_by_index
         ]
         write_json(cache_file, final_entries)
 

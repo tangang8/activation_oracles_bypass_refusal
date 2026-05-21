@@ -1,21 +1,14 @@
 from __future__ import annotations
 
-import hashlib
 import json
-import re
 from pathlib import Path
 from typing import Any
 
-
-def _sanitize_for_name(value: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
-    return cleaned.strip("._-") or "unknown"
+from cache_utils import preview_hash_name
 
 
 def prompt_key(text: str, preview_len: int = 32) -> str:
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
-    preview = _sanitize_for_name(text[:preview_len])
-    return f"{preview}_{digest}"
+    return preview_hash_name(text, preview_len=preview_len, hash_len=12)
 
 
 def _normalize_target_prompt(item: Any) -> str | None:
