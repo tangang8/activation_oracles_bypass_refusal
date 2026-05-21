@@ -99,6 +99,7 @@ def judge_cache_file_path(
     judge_model_name: str,
     judge_lora_path: str | None,
     generation_kwargs: dict,
+    judge_thinking_mode: str,
     judge_instruction_stem: str,
     user_prompt: str,
 ) -> Path:
@@ -118,7 +119,12 @@ def judge_cache_file_path(
     )
     prompt_file = _cache_prompt_file_name(user_prompt)
     temp = generation_kwargs.get("temperature")
-    judge_temp_dir = Path(f"{judge_dir}_temp-{temp}")
+    judge_thinking_suffix = (
+        f"_{sanitize_for_path(f'thinking-{judge_thinking_mode}')}"
+        if judge_thinking_mode == "default"
+        else ""
+    )
+    judge_temp_dir = Path(f"{judge_dir}_temp-{temp}{judge_thinking_suffix}")
     return (
         Path(cache_root)
         / target_dir
@@ -253,6 +259,7 @@ def deterministic_oracle_judge_cache_file_path(
     judge_model_name: str,
     judge_lora_path: str | None,
     judge_generation_kwargs: dict[str, Any],
+    judge_thinking_mode: str,
     judge_instruction_stem: str,
     oracle_model_name: str,
     oracle_lora_path: str | None,
@@ -278,7 +285,12 @@ def deterministic_oracle_judge_cache_file_path(
         lora_path=judge_lora_path,
     )
     judge_temp = judge_generation_kwargs.get("temperature")
-    judge_temp_dir = Path(f"{judge_dir}_temp-{judge_temp}")
+    judge_thinking_suffix = (
+        f"_{sanitize_for_path(f'thinking-{judge_thinking_mode}')}"
+        if judge_thinking_mode == "default"
+        else ""
+    )
+    judge_temp_dir = Path(f"{judge_dir}_temp-{judge_temp}{judge_thinking_suffix}")
     oracle_rollouts_dir = _rollouts_dir_name(oracle_rollouts_dir_base, oracle_generation_kwargs)
     oracle_run_subdir = _run_subdir_path(
         role_prefix="oracle",

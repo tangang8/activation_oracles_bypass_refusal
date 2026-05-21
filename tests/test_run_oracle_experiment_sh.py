@@ -29,6 +29,7 @@ class RunScriptTests(unittest.TestCase):
                 "echo \"TARGET_LORA_PATH=${TARGET_LORA_PATH:-}\"\n"
                 "echo \"JUDGE_LORA_PATH=${JUDGE_LORA_PATH:-}\"\n"
                 "echo \"ORACLE_LORA_PATH=${ORACLE_LORA_PATH:-}\"\n"
+                "echo \"JUDGE_THINKING=${JUDGE_THINKING:-}\"\n"
                 "echo \"ORACLE_ADAPTER_PATH=${ORACLE_ADAPTER_PATH:-}\"\n"
                 "echo \"ORACLE_ADAPTER_NAME=${ORACLE_ADAPTER_NAME:-}\"\n"
                 "echo \"ORACLE_PROMPTS_PATH=${ORACLE_PROMPTS_PATH:-}\"\n"
@@ -55,6 +56,7 @@ class RunScriptTests(unittest.TestCase):
         self.assertIn("target_judging_only", proc.stdout)
         self.assertIn("--judge-instruction-path PATH", proc.stdout)
         self.assertIn("--oracle-prompts-path PATH", proc.stdout)
+        self.assertIn("--judge-thinking MODE", proc.stdout)
 
     def test_invalid_mode(self) -> None:
         proc = subprocess.run([str(SCRIPT), "--mode", "bad"], capture_output=True, text=True, check=False)
@@ -86,6 +88,11 @@ class RunScriptTests(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("Invalid --run-oracle-rollouts setting", proc.stderr)
 
+    def test_invalid_judge_thinking(self) -> None:
+        proc = subprocess.run([str(SCRIPT), "--judge-thinking", "maybe"], capture_output=True, text=True, check=False)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("Invalid --judge-thinking setting", proc.stderr)
+
     def test_preset_oracle_target_control_exports_expected_flags(self) -> None:
         proc = self._run_with_fake_python("--preset", "oracle_target_control", "--mode", "all_target_deterministic")
         self.assertEqual(proc.returncode, 0)
@@ -105,6 +112,7 @@ class RunScriptTests(unittest.TestCase):
         self.assertIn("RUN_TARGET_JUDGING=false", proc.stdout)
         self.assertIn("RUN_ORACLE_ROLLOUTS=true", proc.stdout)
         self.assertIn("RUN_ORACLE_JUDGING=true", proc.stdout)
+        self.assertIn("JUDGE_THINKING=off", proc.stdout)
 
     def test_preset_sampled_target_repeats_sets_sampled_mode(self) -> None:
         proc = self._run_with_fake_python("--preset", "sampled_target_repeats")

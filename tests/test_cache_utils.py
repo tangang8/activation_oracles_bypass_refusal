@@ -87,6 +87,7 @@ class CacheUtilsTests(unittest.TestCase):
             judge_model_name="Qwen/Qwen3-8B",
             judge_lora_path="default",
             generation_kwargs={"temperature": 1.0},
+            judge_thinking_mode="off",
             judge_instruction_stem="my/stem",
             user_prompt="prompt",
         )
@@ -97,6 +98,7 @@ class CacheUtilsTests(unittest.TestCase):
             judge_model_name="Qwen/Qwen3-8B",
             judge_lora_path="default",
             judge_generation_kwargs={"temperature": 0.0},
+            judge_thinking_mode="off",
             judge_instruction_stem="my/stem",
             oracle_model_name="Qwen/Qwen3-8B",
             oracle_lora_path="oracle",
@@ -106,7 +108,21 @@ class CacheUtilsTests(unittest.TestCase):
             oracle_rollouts_dir_base="oracle_prompt_rollouts",
         )
         self.assertIn("my_stem", str(target_judge))
+        self.assertNotIn("thinking-off", str(target_judge))
         self.assertIn("oracle_prompt_rollouts_temp-1.0", str(oracle_judge))
+
+        target_judge_default = judge_cache_file_path(
+            cache_root="cache",
+            target_model_name="Qwen/Qwen3-8B",
+            target_lora_path="default",
+            judge_model_name="Qwen/Qwen3-8B",
+            judge_lora_path="default",
+            generation_kwargs={"temperature": 1.0},
+            judge_thinking_mode="default",
+            judge_instruction_stem="my/stem",
+            user_prompt="prompt",
+        )
+        self.assertIn("thinking-default", str(target_judge_default))
 
     def test_load_and_write_json(self) -> None:
         with tempfile.TemporaryDirectory() as td:

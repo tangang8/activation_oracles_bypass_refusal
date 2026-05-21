@@ -71,6 +71,7 @@ max_new_tokens=10000                         # MAX_NEW_TOKENS: generation cap fo
 oracle_max_new_tokens=1000                   # ORACLE_MAX_NEW_TOKENS: generation cap for oracle rollout stage.
 oracle_eval_batch_size=32                    # ORACLE_EVAL_BATCH_SIZE: batch size for oracle rollout generation.
 oracle_judge_batch_size=8                    # ORACLE_JUDGE_BATCH_SIZE: batch size for oracle judging stage.
+judge_thinking="off"                         # JUDGE_THINKING: default | off
 judge_instruction_path="user_request_fulfillment.jinja2"  # JUDGE_INSTRUCTION_PATH: judge prompt template file.
 oracle_prompts_path="prompts/oracle_prompts/default_oracle_prompts.json"  # ORACLE_PROMPTS_PATH: oracle prompt list file.
 wandb_run_name=""                            # WANDB_RUN_NAME: optional run display name.
@@ -124,6 +125,7 @@ Options:
   --target-lora-path NAME        TARGET_LORA_PATH (adapter name for target stages)
   --judge-lora-path NAME         JUDGE_LORA_PATH (adapter name for judge stages)
   --oracle-lora-path NAME        ORACLE_LORA_PATH (adapter name for oracle rollout stage)
+  --judge-thinking MODE          JUDGE_THINKING: default | off
   --wandb on|off                 Enable/disable Weights & Biases logging
   --wandb-run-name NAME          WANDB_RUN_NAME
   --set KEY=VALUE                Additional env var (repeatable)
@@ -171,6 +173,7 @@ MAX_NEW_TOKENS_FROM_ENV="${MAX_NEW_TOKENS+x}"
 ORACLE_MAX_NEW_TOKENS_FROM_ENV="${ORACLE_MAX_NEW_TOKENS+x}"
 ORACLE_EVAL_BATCH_SIZE_FROM_ENV="${ORACLE_EVAL_BATCH_SIZE+x}"
 ORACLE_JUDGE_BATCH_SIZE_FROM_ENV="${ORACLE_JUDGE_BATCH_SIZE+x}"
+JUDGE_THINKING_FROM_ENV="${JUDGE_THINKING+x}"
 JUDGE_INSTRUCTION_PATH_FROM_ENV="${JUDGE_INSTRUCTION_PATH+x}"
 ORACLE_PROMPTS_PATH_FROM_ENV="${ORACLE_PROMPTS_PATH+x}"
 ORACLE_ADAPTER_PATH_FROM_ENV="${ORACLE_ADAPTER_PATH+x}"
@@ -194,6 +197,7 @@ MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-$max_new_tokens}"
 ORACLE_MAX_NEW_TOKENS="${ORACLE_MAX_NEW_TOKENS:-$oracle_max_new_tokens}"
 ORACLE_EVAL_BATCH_SIZE="${ORACLE_EVAL_BATCH_SIZE:-$oracle_eval_batch_size}"
 ORACLE_JUDGE_BATCH_SIZE="${ORACLE_JUDGE_BATCH_SIZE:-$oracle_judge_batch_size}"
+JUDGE_THINKING="${JUDGE_THINKING:-$judge_thinking}"
 JUDGE_INSTRUCTION_PATH="${JUDGE_INSTRUCTION_PATH:-$judge_instruction_path}"
 ORACLE_PROMPTS_PATH="${ORACLE_PROMPTS_PATH:-$oracle_prompts_path}"
 ORACLE_ADAPTER_PATH="${ORACLE_ADAPTER_PATH:-}"
@@ -235,6 +239,7 @@ while [[ $# -gt 0 ]]; do
     --oracle-max-new-tokens) ORACLE_MAX_NEW_TOKENS="$2"; shift 2 ;;
     --oracle-eval-batch-size) ORACLE_EVAL_BATCH_SIZE="$2"; shift 2 ;;
     --oracle-judge-batch-size) ORACLE_JUDGE_BATCH_SIZE="$2"; shift 2 ;;
+    --judge-thinking) JUDGE_THINKING="$2"; shift 2 ;;
     --judge-instruction-path) JUDGE_INSTRUCTION_PATH="$2"; shift 2 ;;
     --oracle-prompts-path) ORACLE_PROMPTS_PATH="$2"; shift 2 ;;
     --oracle-adapter-path) ORACLE_ADAPTER_PATH="$2"; ORACLE_ADAPTER_PATH_SET="true"; shift 2 ;;
@@ -414,6 +419,14 @@ case "$RUN_ORACLE_JUDGING" in
     exit 1
     ;;
 esac
+case "$JUDGE_THINKING" in
+  default|off) ;;
+  *)
+    echo "Invalid --judge-thinking setting: $JUDGE_THINKING (expected 'default' or 'off')" >&2
+    usage
+    exit 1
+    ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -438,6 +451,7 @@ export MAX_NEW_TOKENS="$MAX_NEW_TOKENS"
 export ORACLE_MAX_NEW_TOKENS="$ORACLE_MAX_NEW_TOKENS"
 export ORACLE_EVAL_BATCH_SIZE="$ORACLE_EVAL_BATCH_SIZE"
 export ORACLE_JUDGE_BATCH_SIZE="$ORACLE_JUDGE_BATCH_SIZE"
+export JUDGE_THINKING="$JUDGE_THINKING"
 export JUDGE_INSTRUCTION_PATH="$JUDGE_INSTRUCTION_PATH"
 export ORACLE_ADAPTER_PATH="$ORACLE_ADAPTER_PATH"
 export ORACLE_ADAPTER_NAME="$ORACLE_ADAPTER_NAME"
@@ -476,6 +490,7 @@ Running bypass_refusal.py with:
   ORACLE_MAX_NEW_TOKENS=$ORACLE_MAX_NEW_TOKENS
   ORACLE_EVAL_BATCH_SIZE=$ORACLE_EVAL_BATCH_SIZE
   ORACLE_JUDGE_BATCH_SIZE=$ORACLE_JUDGE_BATCH_SIZE
+  JUDGE_THINKING=$JUDGE_THINKING
   JUDGE_INSTRUCTION_PATH=$JUDGE_INSTRUCTION_PATH
   ORACLE_PROMPTS_PATH=${ORACLE_PROMPTS_PATH:-<default>}
   ORACLE_ADAPTER_PATH=$ORACLE_ADAPTER_PATH

@@ -43,6 +43,7 @@ class BypassRefusalPipelineTests(unittest.TestCase):
             target_lora_path="default",
             judge_lora_path="default",
             oracle_lora_path="oracle",
+            judge_thinking_mode="off",
             experiment_preset="",
         )
         for key, value in overrides.items():

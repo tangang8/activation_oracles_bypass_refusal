@@ -8,6 +8,7 @@ from typing import Any
 import torch
 from dotenv import load_dotenv
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.utils import logging as hf_logging
 
 from model_loading_utils import AdapterSpec, load_model_stack
 from distributed_utils import DistributedContext, broadcast_object, cleanup_distributed, init_distributed
@@ -32,6 +33,7 @@ from rollout_utils import (
 from wandb_utils import init_wandb_run, log_oracle_judge_metrics, log_oracle_metrics, log_rollout_metrics
 
 dtype = torch.bfloat16
+hf_logging.set_verbosity_error()
 
 EXTENSION_ROOT = Path(__file__).resolve().parent
 
@@ -60,6 +62,7 @@ class ExperimentConfig:
     target_lora_path: str
     judge_lora_path: str
     oracle_lora_path: str
+    judge_thinking_mode: str
     experiment_preset: str
 
     @staticmethod
@@ -90,6 +93,7 @@ class ExperimentConfig:
         target_lora_path = _env_str("TARGET_LORA_PATH", "default")
         judge_lora_path = _env_str("JUDGE_LORA_PATH", "default")
         oracle_lora_path = _env_str("ORACLE_LORA_PATH", oracle_adapter_name)
+        judge_thinking_mode = _env_str("JUDGE_THINKING", "off")
 
         if not any((run_target_rollouts, run_target_judging, run_oracle_rollouts, run_oracle_judging)):
             raise ValueError("At least one pipeline stage must be enabled.")
@@ -101,6 +105,10 @@ class ExperimentConfig:
             raise ValueError(
                 "RUN_ORACLE_ROLLOUTS=true with RUN_TARGET_ROLLOUTS=false is only supported for "
                 "ORACLE_ROLLOUT_MODE=prompt_only_repeats."
+            )
+        if judge_thinking_mode not in {"default", "off"}:
+            raise ValueError(
+                f"Invalid JUDGE_THINKING={judge_thinking_mode!r}. Expected one of: default, off."
             )
 
         num_rollouts = _env_int("NUM_ROLLOUTS", 50)
@@ -133,6 +141,7 @@ class ExperimentConfig:
             target_lora_path=target_lora_path,
             judge_lora_path=judge_lora_path,
             oracle_lora_path=oracle_lora_path,
+            judge_thinking_mode=judge_thinking_mode,
             experiment_preset=preset,
         )
 
@@ -287,6 +296,7 @@ def run_pipeline_for_target_prompt(
                     target_model_name=model.config._name_or_path,
                     target_lora_path=cfg.target_lora_path,
                     judge_lora_path=cfg.judge_lora_path,
+                    judge_thinking_mode=cfg.judge_thinking_mode,
                     cache_root="cache",
                     dist_ctx=ctx,
                     perf=perf,
@@ -425,6 +435,7 @@ def run_pipeline_for_target_prompt(
                         oracle_rollouts_dir_base=oracle_rollouts_dir_base_for_mode(cfg.oracle_rollout_mode),
                         judge_batch_size=cfg.oracle_judge_batch_size,
                         judge_lora_path=cfg.judge_lora_path,
+                        judge_thinking_mode=cfg.judge_thinking_mode,
                         cache_root="cache",
                         dist_ctx=ctx,
                         perf=perf,
@@ -549,6 +560,7 @@ def main(cfg: ExperimentConfig) -> None:
                 "oracle_max_new_tokens": cfg.oracle_max_new_tokens,
                 "oracle_eval_batch_size": cfg.oracle_eval_batch_size,
                 "oracle_judge_batch_size": cfg.oracle_judge_batch_size,
+                "judge_thinking_mode": cfg.judge_thinking_mode,
                 "judge_instruction_file": cfg.judge_instruction_path,
                 "target_prompt_limit": cfg.target_prompt_limit,
                 "target_prompts_total": len(target_prompts),

@@ -5,8 +5,10 @@ from contextlib import nullcontext
 from pathlib import Path
 from time import perf_counter
 from typing import Any
+from collections import Counter
 
 import torch
+from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from cache_utils import deterministic_oracle_judge_cache_file_path, load_json, write_json
@@ -14,6 +16,7 @@ from distributed_utils import DistributedContext, all_gather_objects, broadcast_
 from perf_utils import PerfLogger
 from rollout_utils import (
     THINKING_TAG_PATTERNS_BY_MODEL,
+    resolve_judge_enable_thinking,
     score_responses_compliance_batched,
 )
 
@@ -185,6 +188,34 @@ def _oracle_judge_summary(judged_entries: list[dict[str, Any]]) -> dict[str, Any
     return summary
 
 
+def _apply_oracle_judge_updates(
+    *,
+    merged_by_index: dict[int, dict[str, Any]],
+    updates: list[dict[str, Any]],
+) -> None:
+    for update in updates:
+        idx = int(update["rollout_index"])
+        if idx not in merged_by_index:
+            continue
+        compliance_root = merged_by_index[idx].setdefault("compliance", {})
+        if not isinstance(compliance_root, dict):
+            compliance_root = {}
+            merged_by_index[idx]["compliance"] = compliance_root
+        _set_path_leaf(compliance_root, tuple(update["path"]), update["compliance"])
+
+
+def _materialize_oracle_judge_entries(
+    *,
+    oracle_rollout_entries: list[dict[str, Any]],
+    merged_by_index: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        merged_by_index[_entry_index(entry)]
+        for entry in sorted(oracle_rollout_entries, key=_entry_index)
+        if _entry_index(entry) in merged_by_index
+    ]
+
+
 def judge_oracle_rollouts(
     judge_model: AutoModelForCausalLM,
     judge_tokenizer: AutoTokenizer,
@@ -201,6 +232,7 @@ def judge_oracle_rollouts(
     oracle_generation_kwargs: dict[str, Any],
     oracle_rollouts_dir_base: str = "oracle_rollouts",
     judge_generation_kwargs: dict[str, Any] | None = None,
+    judge_thinking_mode: str = "default",
     judge_batch_size: int = 8,
     judge_lora_path: str | None = "default",
     cache_root: str = "cache",
@@ -220,6 +252,7 @@ def judge_oracle_rollouts(
         judge_model_name=judge_model.config._name_or_path,
         judge_lora_path=judge_lora_path,
         judge_generation_kwargs=judge_generation_kwargs,
+        judge_thinking_mode=judge_thinking_mode,
         judge_instruction_stem=judge_instruction_stem,
         oracle_model_name=oracle_model_name,
         oracle_lora_path=oracle_lora_path,
@@ -275,6 +308,8 @@ def judge_oracle_rollouts(
         local_items = [item for i, item in enumerate(pending_items) if i % dist_ctx.world_size == dist_ctx.rank]
 
     judge_thinking_tag = THINKING_TAG_PATTERNS_BY_MODEL.get(judge_model.config._name_or_path)
+    judge_enable_thinking = resolve_judge_enable_thinking(judge_thinking_mode)
+    can_checkpoint_locally = dist_ctx is None or not dist_ctx.enabled
     local_updates: list[dict[str, Any]] = []
     if local_items:
         grouped: dict[str, list[dict[str, Any]]] = {}
@@ -296,43 +331,73 @@ def judge_oracle_rollouts(
             else nullcontext()
         ) as judge_metrics:
             judge_t0 = perf_counter()
-            for user_prompt, group_items in grouped.items():
-                for offset in range(0, len(group_items), judge_batch_size):
-                    chunk_items = group_items[offset : offset + judge_batch_size]
-                    responses = [item["response_text"] for item in chunk_items]
-                    judged = score_responses_compliance_batched(
-                        judge_model=judge_model,
-                        judge_tokenizer=judge_tokenizer,
-                        user_prompt=user_prompt,
-                        target_responses=responses,
-                        judge_instruction_template=judge_instruction_template,
-                        device=device,
-                        judge_lora_path=judge_lora_path,
-                        generation_kwargs=judge_generation_kwargs,
-                        target_thinking_tag=None,
-                        judge_thinking_tag=judge_thinking_tag,
-                        emit_summary_log=False,
-                        stage_label="oracle judging",
-                        item_ids=[_oracle_judge_item_id(item) for item in chunk_items],
-                        malformed_retry_attempts=3,
-                    )
-                    for item, compliance in zip(chunk_items, judged, strict=True):
-                        payload = {
-                            **compliance,
-                            "judge_instruction_file": judge_instruction_file,
-                            "probe_kind": item["probe_kind"],
-                        }
-                        if "token_index" in item:
-                            payload["token_index"] = item["token_index"]
-                        if "token_point_name" in item:
-                            payload["token_point_name"] = item["token_point_name"]
-                        local_updates.append(
-                            {
-                                "rollout_index": item["rollout_index"],
-                                "path": list(item["path"]),
-                                "compliance": payload,
-                            }
+            remaining_items_by_rollout = Counter(int(item["rollout_index"]) for item in local_items)
+            pbar = tqdm(
+                total=len(remaining_items_by_rollout),
+                desc="Oracle judging rollouts",
+                disable=not (dist_ctx is None or not dist_ctx.enabled or dist_ctx.is_main),
+            )
+            try:
+                for user_prompt, group_items in grouped.items():
+                    for offset in range(0, len(group_items), judge_batch_size):
+                        chunk_items = group_items[offset : offset + judge_batch_size]
+                        responses = [item["response_text"] for item in chunk_items]
+                        judged = score_responses_compliance_batched(
+                            judge_model=judge_model,
+                            judge_tokenizer=judge_tokenizer,
+                            user_prompt=user_prompt,
+                            target_responses=responses,
+                            judge_instruction_template=judge_instruction_template,
+                            device=device,
+                            judge_lora_path=judge_lora_path,
+                            generation_kwargs=judge_generation_kwargs,
+                            target_thinking_tag=None,
+                            judge_thinking_tag=judge_thinking_tag,
+                            judge_enable_thinking=judge_enable_thinking,
+                            emit_summary_log=False,
+                            stage_label="oracle judging",
+                            item_ids=[_oracle_judge_item_id(item) for item in chunk_items],
+                            malformed_retry_attempts=4,
                         )
+                        chunk_updates: list[dict[str, Any]] = []
+                        for item, compliance in zip(chunk_items, judged, strict=True):
+                            payload = {
+                                **compliance,
+                                "judge_instruction_file": judge_instruction_file,
+                                "probe_kind": item["probe_kind"],
+                            }
+                            if "token_index" in item:
+                                payload["token_index"] = item["token_index"]
+                            if "token_point_name" in item:
+                                payload["token_point_name"] = item["token_point_name"]
+                            chunk_updates.append(
+                                {
+                                    "rollout_index": item["rollout_index"],
+                                    "path": list(item["path"]),
+                                    "compliance": payload,
+                                }
+                            )
+                        local_updates.extend(chunk_updates)
+                        if can_checkpoint_locally and chunk_updates:
+                            _apply_oracle_judge_updates(
+                                merged_by_index=merged_by_index,
+                                updates=chunk_updates,
+                            )
+                            checkpoint_entries = _materialize_oracle_judge_entries(
+                                oracle_rollout_entries=oracle_rollout_entries,
+                                merged_by_index=merged_by_index,
+                            )
+                            write_json(cache_file, checkpoint_entries)
+                        completed_rollouts = 0
+                        for item in chunk_items:
+                            rollout_index = int(item["rollout_index"])
+                            remaining_items_by_rollout[rollout_index] -= 1
+                            if remaining_items_by_rollout[rollout_index] == 0:
+                                completed_rollouts += 1
+                        if completed_rollouts > 0:
+                            pbar.update(completed_rollouts)
+            finally:
+                pbar.close()
             if perf:
                 elapsed = max(perf_counter() - judge_t0, 1e-12)
                 judge_metrics["throughput/oracle_judgments_per_second"] = float(len(local_items)) / elapsed
@@ -348,20 +413,14 @@ def judge_oracle_rollouts(
         for updates in gathered_updates:
             if not isinstance(updates, list):
                 continue
-            for update in updates:
-                idx = int(update["rollout_index"])
-                if idx not in merged_by_index:
-                    continue
-                compliance_root = merged_by_index[idx].setdefault("compliance", {})
-                if not isinstance(compliance_root, dict):
-                    compliance_root = {}
-                    merged_by_index[idx]["compliance"] = compliance_root
-                _set_path_leaf(compliance_root, tuple(update["path"]), update["compliance"])
-        final_entries = [
-            merged_by_index[_entry_index(entry)]
-            for entry in sorted(oracle_rollout_entries, key=_entry_index)
-            if _entry_index(entry) in merged_by_index
-        ]
+            _apply_oracle_judge_updates(
+                merged_by_index=merged_by_index,
+                updates=updates,
+            )
+        final_entries = _materialize_oracle_judge_entries(
+            oracle_rollout_entries=oracle_rollout_entries,
+            merged_by_index=merged_by_index,
+        )
         write_json(cache_file, final_entries)
 
     if dist_ctx is not None and dist_ctx.enabled:

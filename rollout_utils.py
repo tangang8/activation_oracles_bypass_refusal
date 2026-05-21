@@ -18,6 +18,19 @@ THINKING_TAG_PATTERNS_BY_MODEL: dict[str, dict[str, str]] = {
     "Qwen/Qwen3-8B": {"open": r"<think>", "close": r"</think>"},
 }
 
+
+def resolve_judge_enable_thinking(judge_thinking: str) -> bool | None:
+    normalized = judge_thinking.strip().lower()
+    if normalized == "default":
+        return None
+    if normalized == "off":
+        return False
+    raise ValueError(
+        f"Invalid judge thinking mode: {judge_thinking!r}. "
+        "Expected one of: default, off."
+    )
+
+
 def generate_target_response_from_formatted_prompt(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
@@ -230,10 +243,11 @@ def score_responses_compliance_batched(
     generation_kwargs: dict | None = None,
     target_thinking_tag: dict[str, str] | None = None,
     judge_thinking_tag: dict[str, str] | None = None,
+    judge_enable_thinking: bool | None = None,
     emit_summary_log: bool = True,
     stage_label: str = "judge",
     item_ids: list[str] | None = None,
-    malformed_retry_attempts: int = 3,
+    malformed_retry_attempts: int = 4,
 ) -> list[dict]:
     """Score multiple target responses in a single batched judge generation call."""
     if generation_kwargs is None:
@@ -262,7 +276,20 @@ def score_responses_compliance_batched(
             judge_instruction = judge_instruction_template.format(
                 user_prompt=user_prompt, model_response=preproc["parsed_response"],
             )
-            batch_prompts.append(format_user_target_prompt(judge_tokenizer, judge_instruction))
+            try:
+                batch_prompt = format_user_target_prompt(
+                    judge_tokenizer,
+                    judge_instruction,
+                    enable_thinking=judge_enable_thinking,
+                )
+            except TypeError as exc:
+                if judge_enable_thinking is False:
+                    raise ValueError(
+                        "Judge tokenizer does not support enable_thinking=False in apply_chat_template. "
+                        "Rerun with judge thinking mode set to 'default'."
+                    ) from exc
+                raise
+            batch_prompts.append(batch_prompt)
             batch_indices.append(i)
             batch_preprocs.append(preproc)
 
@@ -286,9 +313,15 @@ def score_responses_compliance_batched(
             else:
                 run_kwargs = dict(generation_kwargs)
                 run_kwargs["max_new_tokens"] = max(base_max_new_tokens + 1, base_max_new_tokens * (2**attempt))
+                pending_item_ids = [item_ids[pos] for pos in pending_positions]
+                if len(pending_item_ids) > 3:
+                    pending_preview = ", ".join(pending_item_ids[:3]) + ", ..."
+                else:
+                    pending_preview = ", ".join(pending_item_ids)
                 print(
                     f"[{stage_label}] judge retry {attempt}/{malformed_retry_attempts}: "
-                    f"count={len(pending_positions)} max_new_tokens={run_kwargs['max_new_tokens']}"
+                    f"count={len(pending_positions)} max_new_tokens={run_kwargs['max_new_tokens']} "
+                    f"items=[{pending_preview}]"
                 )
 
             run_prompts = [batch_prompts[pos] for pos in pending_positions]
@@ -701,6 +734,7 @@ def judge_target_rollouts(
     judge_lora_path: str | None = "default",
     cache_root: str = "cache",
     judge_generation_kwargs: dict[str, Any] | None = None,
+    judge_thinking_mode: str = "default",
     dist_ctx: DistributedContext | None = None,
     perf: PerfLogger | None = None,
 ) -> tuple[list[dict[str, Any]], Path, dict[str, Any]]:
@@ -708,6 +742,7 @@ def judge_target_rollouts(
         judge_generation_kwargs = {"do_sample": False, "temperature": 0.0, "max_new_tokens": 1000}
 
     judge_thinking_tag = THINKING_TAG_PATTERNS_BY_MODEL.get(judge_model.config._name_or_path)
+    judge_enable_thinking = resolve_judge_enable_thinking(judge_thinking_mode)
     cache_file = judge_cache_file_path(
         cache_root=cache_root,
         target_model_name=target_model_name,
@@ -715,6 +750,7 @@ def judge_target_rollouts(
         judge_model_name=judge_model.config._name_or_path,
         judge_lora_path=judge_lora_path,
         generation_kwargs=judge_generation_kwargs,
+        judge_thinking_mode=judge_thinking_mode,
         judge_instruction_stem=judge_instruction_stem,
         user_prompt=user_prompt,
     )
@@ -810,10 +846,11 @@ def judge_target_rollouts(
                 generation_kwargs=judge_generation_kwargs,
                 target_thinking_tag=None,
                 judge_thinking_tag=judge_thinking_tag,
+                judge_enable_thinking=judge_enable_thinking,
                 emit_summary_log=False,
                 stage_label="target judging",
                 item_ids=[f"rollout_index={int(entry['rollout_index'])}" for entry in batch_rollouts],
-                malformed_retry_attempts=3,
+                malformed_retry_attempts=4,
             )
             if perf:
                 elapsed = max(perf_counter() - judge_t0, 1e-12)
