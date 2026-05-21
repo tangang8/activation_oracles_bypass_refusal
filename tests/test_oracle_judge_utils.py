@@ -64,6 +64,31 @@ class OracleJudgeUtilsTests(unittest.TestCase):
         self.assertEqual(summary["oracle_judge/total_scored"], 3.0)
         self.assertIn("oracle_judge/full_seq_avg_score", summary)
 
+    def test_oracle_judge_item_id_prompt_only(self) -> None:
+        item_id = oju._oracle_judge_item_id(
+            {
+                "rollout_index": 2,
+                "source_index_label": "oracle_rollout_index",
+                "probe_kind": "full_seq",
+            }
+        )
+        self.assertEqual(item_id, "oracle_rollout_index=2 probe=full_seq")
+
+    def test_oracle_judge_item_id_target_backed(self) -> None:
+        item_id = oju._oracle_judge_item_id(
+            {
+                "rollout_index": 5,
+                "target_rollout_index": 9,
+                "oracle_rollout_index": 3,
+                "probe_kind": "token_points",
+                "token_point_name": "last_prompt_token",
+            }
+        )
+        self.assertEqual(
+            item_id,
+            "target_rollout_index=9 oracle_rollout_index=3 probe=token_points:last_prompt_token",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

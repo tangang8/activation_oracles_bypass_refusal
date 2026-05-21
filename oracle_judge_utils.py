@@ -28,6 +28,7 @@ def _entry_index(entry: dict[str, Any]) -> int:
 
 def _flatten_oracle_responses(entry: dict[str, Any]) -> list[dict[str, Any]]:
     rollout_index = _entry_index(entry)
+    source_index_label = "rollout_index" if "rollout_index" in entry else "oracle_rollout_index"
     user_prompt = str(entry.get("target_prompt", ""))
     oracle_response = entry.get("oracle_response", {})
     oracle_format = entry.get("oracle_format", {})
@@ -42,10 +43,13 @@ def _flatten_oracle_responses(entry: dict[str, Any]) -> list[dict[str, Any]]:
         flattened.append(
             {
                 "rollout_index": rollout_index,
+                "source_index_label": source_index_label,
                 "path": (probe_kind,),
                 "probe_kind": probe_kind,
                 "user_prompt": user_prompt,
                 "response_text": response_text,
+                "target_rollout_index": entry.get("target_rollout_index"),
+                "oracle_rollout_index": entry.get("oracle_rollout_index"),
             }
         )
 
@@ -62,11 +66,14 @@ def _flatten_oracle_responses(entry: dict[str, Any]) -> list[dict[str, Any]]:
             flattened.append(
                 {
                     "rollout_index": rollout_index,
+                    "source_index_label": source_index_label,
                     "path": ("tokens", token_key),
                     "probe_kind": "tokens",
                     "token_index": token_key,
                     "user_prompt": user_prompt,
                     "response_text": response_text,
+                    "target_rollout_index": entry.get("target_rollout_index"),
+                    "oracle_rollout_index": entry.get("oracle_rollout_index"),
                 }
             )
 
@@ -83,14 +90,35 @@ def _flatten_oracle_responses(entry: dict[str, Any]) -> list[dict[str, Any]]:
             flattened.append(
                 {
                     "rollout_index": rollout_index,
+                    "source_index_label": source_index_label,
                     "path": ("token_points", point_key),
                     "probe_kind": "token_points",
                     "token_point_name": point_key,
                     "user_prompt": user_prompt,
                     "response_text": response_text,
+                    "target_rollout_index": entry.get("target_rollout_index"),
+                    "oracle_rollout_index": entry.get("oracle_rollout_index"),
                 }
             )
     return flattened
+
+
+def _oracle_judge_item_id(item: dict[str, Any]) -> str:
+    probe_suffix = ""
+    if "token_index" in item:
+        probe_suffix = f":{item['token_index']}"
+    elif "token_point_name" in item:
+        probe_suffix = f":{item['token_point_name']}"
+    probe = f"probe={item['probe_kind']}{probe_suffix}"
+    target_rollout_index = item.get("target_rollout_index")
+    oracle_rollout_index = item.get("oracle_rollout_index")
+    if target_rollout_index is not None and oracle_rollout_index is not None:
+        return (
+            f"target_rollout_index={int(target_rollout_index)} "
+            f"oracle_rollout_index={int(oracle_rollout_index)} {probe}"
+        )
+    source_index_label = str(item.get("source_index_label", "rollout_index"))
+    return f"{source_index_label}={int(item['rollout_index'])} {probe}"
 
 
 def _get_path_leaf(root: dict[str, Any], path: tuple[str, ...]) -> Any:
@@ -285,22 +313,7 @@ def judge_oracle_rollouts(
                         judge_thinking_tag=judge_thinking_tag,
                         emit_summary_log=False,
                         stage_label="oracle judging",
-                        item_ids=[
-                            (
-                                f"rollout_index={int(item['rollout_index'])} "
-                                f"probe={item['probe_kind']}"
-                                + (
-                                    f":{item['token_index']}"
-                                    if "token_index" in item
-                                    else (
-                                        f":{item['token_point_name']}"
-                                        if "token_point_name" in item
-                                        else ""
-                                    )
-                                )
-                            )
-                            for item in chunk_items
-                        ],
+                        item_ids=[_oracle_judge_item_id(item) for item in chunk_items],
                         malformed_retry_attempts=3,
                     )
                     for item, compliance in zip(chunk_items, judged, strict=True):

@@ -66,7 +66,7 @@ oracle_mode="all_target_deterministic"       # ORACLE_ROLLOUT_MODE: all_target_d
 num_rollouts=50                              # NUM_ROLLOUTS: number of target rollouts to generate.
 k_rollouts=10                                # K_ROLLOUTS: max target rollouts selected for sampled oracle mode.
 num_oracle_rollouts=1                        # NUM_ORACLE_ROLLOUTS: oracle repeats per selected target (or prompt-only repeats).
-target_prompt_limit=100                      # TARGET_PROMPT_LIMIT: how many target prompts to load.
+target_prompt_limit=1                        # TARGET_PROMPT_LIMIT: how many target prompts to load.
 max_new_tokens=10000                         # MAX_NEW_TOKENS: generation cap for target rollout stage.
 oracle_max_new_tokens=1000                   # ORACLE_MAX_NEW_TOKENS: generation cap for oracle rollout stage.
 oracle_eval_batch_size=32                    # ORACLE_EVAL_BATCH_SIZE: batch size for oracle rollout generation.
@@ -141,11 +141,13 @@ Preset behavior:
   sampled_target_repeats:
     mode=sampled_target_repeats, all 4 stages enabled
   prompt_only_oracle:
-    mode=prompt_only_repeats, target stages off, oracle rollout on, oracle judging off
+    mode=prompt_only_repeats, target stages off, oracle rollout on, oracle judging on
   oracle_target_control:
-    mode=all_target_deterministic, target stages on, oracle stages off, target adapter=oracle adapter name
+    target stages on, oracle stages off, target adapter=oracle adapter name
+    oracle rollout mode is unused because oracle stages are off
   target_judging_only:
-    mode=all_target_deterministic, target stages on, oracle stages off
+    target stages on, oracle stages off
+    oracle rollout mode is unused because oracle stages are off
 
 Preset examples:
   ./run_oracle_experiment.sh --preset full_deterministic_oracle
@@ -298,7 +300,7 @@ case "$EXPERIMENT_PRESET" in
     set_preset_if_unset RUN_TARGET_ROLLOUTS "false" "$RUN_TARGET_ROLLOUTS_SET" "$RUN_TARGET_ROLLOUTS_FROM_ENV"
     set_preset_if_unset RUN_TARGET_JUDGING "false" "$RUN_TARGET_JUDGING_SET" "$RUN_TARGET_JUDGING_FROM_ENV"
     set_preset_if_unset RUN_ORACLE_ROLLOUTS "true" "$RUN_ORACLE_ROLLOUTS_SET" "$RUN_ORACLE_ROLLOUTS_FROM_ENV"
-    set_preset_if_unset RUN_ORACLE_JUDGING "false" "$RUN_ORACLE_JUDGING_SET" "$RUN_ORACLE_JUDGING_FROM_ENV"
+    set_preset_if_unset RUN_ORACLE_JUDGING "true" "$RUN_ORACLE_JUDGING_SET" "$RUN_ORACLE_JUDGING_FROM_ENV"
     set_preset_if_unset NUM_ORACLE_ROLLOUTS "4" "$NUM_ORACLE_ROLLOUTS_SET" "$NUM_ORACLE_ROLLOUTS_FROM_ENV"
     ;;
   oracle_target_control)

@@ -1,6 +1,7 @@
 import sys
 import json
 from contextlib import nullcontext
+from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -29,6 +30,20 @@ from oracle_token_points import (
     extract_token_points_prompt_default,
 )
 from perf_utils import PerfLogger
+
+
+@dataclass(frozen=True)
+class OracleInputProvenance:
+    source_type: str
+    source_index_label: str
+    source_index: int
+    cache_path: Path
+
+
+def _oracle_input_source(target_responses: list[str] | None) -> tuple[str, str]:
+    if target_responses is None:
+        return "prompt_only", "prompt_input_index"
+    return "target_rollout", "target_rollout_index"
 
 
 def _encode_formatted_prompts(
@@ -99,6 +114,7 @@ def run_oracle_batched(
     token_end_idx: int | None = None,
     # New fourth mode ("token_points")
     token_point_indices_by_target: list[list[int]] | None = None,
+    oracle_input_source_type: str | None = None,
     dist_ctx: DistributedContext | None = None,
     perf: PerfLogger | None = None,
 ) -> list[dict[str, Any]]:
@@ -173,6 +189,16 @@ def run_oracle_batched(
             generation_kwargs = {"do_sample": True, "temperature": 1.0, "max_new_tokens": 128}
         else:
             generation_kwargs = {"do_sample": False, "temperature": 0.0, "max_new_tokens": 128}
+    inferred_source_type, source_index_label = _oracle_input_source(target_responses)
+    source_type = oracle_input_source_type or inferred_source_type
+    if source_type not in {"prompt_only", "target_rollout"}:
+        raise ValueError(
+            f"Unsupported oracle_input_source_type={source_type!r}. Expected 'prompt_only' or 'target_rollout'."
+        )
+    if source_type == "prompt_only" and target_responses is not None:
+        raise ValueError("oracle_input_source_type=prompt_only requires target_responses=None.")
+    if source_type == "target_rollout" and target_responses is None:
+        raise ValueError("oracle_input_source_type=target_rollout requires target_responses to be provided.")
 
     combined_specs: list[dict[str, Any]] = []
     if target_responses is None:
@@ -235,10 +261,10 @@ def run_oracle_batched(
         if is_main:
             print(msg)
 
-    cache_paths: list[Path] = []
+    provenance_by_input: list[OracleInputProvenance] = []
     cached_by_target: list[list[dict[str, Any]]] = []
     cached_counts_by_target: list[int] = []
-    cache_status_by_target: list[tuple[int, int, int]] = []
+    cache_status_by_target: list[tuple[OracleInputProvenance, int, int]] = []
     for target_idx, spec in enumerate(combined_specs):
         cache_key = {
             "oracle_prompt": oracle_prompt,
@@ -265,7 +291,13 @@ def run_oracle_batched(
             user_prompt_preview_text=user_prompts_list[target_idx],
             cache_key_text=cache_key_text,
         )
-        cache_paths.append(cache_path)
+        provenance = OracleInputProvenance(
+            source_type=source_type,
+            source_index_label=source_index_label,
+            source_index=target_idx,
+            cache_path=cache_path,
+        )
+        provenance_by_input.append(provenance)
         cached = load_json(cache_path)
         cached_entries = (
             cached
@@ -276,7 +308,7 @@ def run_oracle_batched(
         cached_count = len(cached_entries)
         cached_counts_by_target.append(cached_count)
         missing_count = max(0, oracle_repeats - cached_count)
-        cache_status_by_target.append((target_idx, cached_count, missing_count))
+        cache_status_by_target.append((provenance, cached_count, missing_count))
 
     full_hits = sum(1 for _, _, missing_count in cache_status_by_target if missing_count == 0)
     partial_hits = sum(1 for _, cached_count, missing_count in cache_status_by_target if cached_count > 0 and missing_count > 0)
@@ -295,25 +327,28 @@ def run_oracle_batched(
             metadata={"rank": rank, "world_size": world_size},
         )
     maybe_log(
-        f"[oracle cache] targets={len(cache_status_by_target)} "
+        f"[oracle cache] source={source_type} oracle_inputs={len(cache_status_by_target)} "
         f"requested_repeats={oracle_repeats} full_hits={full_hits} partial_hits={partial_hits} misses={misses}"
     )
     missing_status = [
-        (target_idx, cached_count, missing_count)
-        for target_idx, cached_count, missing_count in cache_status_by_target
+        (provenance, cached_count, missing_count)
+        for provenance, cached_count, missing_count in cache_status_by_target
         if missing_count > 0
     ]
     if missing_status:
         preview = ", ".join(
-            f"{idx}(cached={cached},missing={missing})"
-            for idx, cached, missing in missing_status[:10]
+            (
+                f"{provenance.source_index_label}={provenance.source_index}"
+                f"(cached={cached},missing={missing})"
+            )
+            for provenance, cached, missing in missing_status[:10]
         )
         if len(missing_status) > 10:
             maybe_log(
-                f"[oracle cache] missing targets: {len(missing_status)} total; first 10 -> {preview}"
+                f"[oracle cache] missing oracle inputs: {len(missing_status)} total; first 10 -> {preview}"
             )
         else:
-            maybe_log(f"[oracle cache] missing targets ({len(missing_status)}): {preview}")
+            maybe_log(f"[oracle cache] missing oracle inputs ({len(missing_status)}): {preview}")
 
     missing_indices = [i for i, cached_count in enumerate(cached_counts_by_target) if cached_count < oracle_repeats]
     if not missing_indices:
@@ -495,7 +530,6 @@ def run_oracle_batched(
                         steering_coefficient=steering_coefficient,
                         generation_kwargs=generation_kwargs,
                         verbose=False,
-                        progress_desc=f"Evaluating model (target_idx={global_target_idx})",
                     )
                     if perf:
                         elapsed = max(perf_counter() - eval_t0, 1e-12)
@@ -523,10 +557,12 @@ def run_oracle_batched(
                 # Checkpoint each completed target immediately so long runs can resume
                 # even if interrupted before the final gather/merge phase.
                 checkpoint_entries = cached_by_target[global_target_idx] + append_entries
-                write_json(cache_paths[global_target_idx], checkpoint_entries)
+                provenance = provenance_by_input[global_target_idx]
+                write_json(provenance.cache_path, checkpoint_entries)
                 maybe_log(
-                    f"[oracle cache] checkpoint target_idx={global_target_idx} "
-                    f"(added_repeats={len(append_entries)}, checkpoint_total={len(checkpoint_entries)})"
+                    f"[oracle cache] checkpoint {provenance.source_index_label}={provenance.source_index} "
+                    f"(added_repeats={len(append_entries)}, checkpoint_total={len(checkpoint_entries)}) "
+                    f"cache_file={provenance.cache_path}"
                 )
 
     if dist_ctx is not None and dist_ctx.enabled:
@@ -544,13 +580,15 @@ def run_oracle_batched(
                 if not append_entries:
                     continue
                 cached_by_target[global_idx].extend(append_entries)
-                write_json(cache_paths[global_idx], cached_by_target[global_idx])
+                provenance = provenance_by_input[global_idx]
+                write_json(provenance.cache_path, cached_by_target[global_idx])
                 updated_targets += 1
                 maybe_log(
-                    f"[oracle cache] updated target_idx={global_idx} "
-                    f"(added_repeats={len(append_entries)}, total_cached={len(cached_by_target[global_idx])})"
+                    f"[oracle cache] updated {provenance.source_index_label}={provenance.source_index} "
+                    f"(added_repeats={len(append_entries)}, total_cached={len(cached_by_target[global_idx])}) "
+                    f"cache_file={provenance.cache_path}"
                 )
-        maybe_log(f"[oracle cache] updated cache files for {updated_targets} target(s)")
+        maybe_log(f"[oracle cache] updated cache files for {updated_targets} oracle input(s)")
 
         final_results = [
             _aggregate_oracle_repeat_entries(cached_by_target[i][:oracle_repeats])

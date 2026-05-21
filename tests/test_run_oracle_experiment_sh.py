@@ -104,7 +104,7 @@ class RunScriptTests(unittest.TestCase):
         self.assertIn("RUN_TARGET_ROLLOUTS=false", proc.stdout)
         self.assertIn("RUN_TARGET_JUDGING=false", proc.stdout)
         self.assertIn("RUN_ORACLE_ROLLOUTS=true", proc.stdout)
-        self.assertIn("RUN_ORACLE_JUDGING=false", proc.stdout)
+        self.assertIn("RUN_ORACLE_JUDGING=true", proc.stdout)
 
     def test_preset_sampled_target_repeats_sets_sampled_mode(self) -> None:
         proc = self._run_with_fake_python("--preset", "sampled_target_repeats")

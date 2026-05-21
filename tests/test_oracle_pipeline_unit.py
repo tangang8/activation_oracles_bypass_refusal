@@ -44,6 +44,28 @@ class OraclePipelineUnitTests(unittest.TestCase):
     def test_aggregate_empty(self) -> None:
         self.assertEqual(oracle_pipeline._aggregate_oracle_repeat_entries([]), {})
 
+    def test_oracle_input_source_labels(self) -> None:
+        self.assertEqual(
+            oracle_pipeline._oracle_input_source(None),
+            ("prompt_only", "prompt_input_index"),
+        )
+        self.assertEqual(
+            oracle_pipeline._oracle_input_source(["response"]),
+            ("target_rollout", "target_rollout_index"),
+        )
+
+    def test_run_oracle_batched_source_type_validation(self) -> None:
+        with self.assertRaises(ValueError):
+            oracle_pipeline.run_oracle_batched(
+                model=object(),
+                tokenizer=object(),
+                device=object(),
+                formatted_target_prompts=["formatted"],
+                target_responses=["response"],
+                oracle_prompt="oracle",
+                oracle_input_source_type="prompt_only",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

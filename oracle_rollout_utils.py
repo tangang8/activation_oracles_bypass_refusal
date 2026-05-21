@@ -130,6 +130,7 @@ def run_oracle_combined_singlelayer(
         eval_batch_size=eval_batch_size,
         oracle_input_types=oracle_input_types,
         generation_kwargs=generation_kwargs,
+        oracle_input_source_type="target_rollout",
         dist_ctx=dist_ctx,
         perf=perf,
         **batched_kwargs,
@@ -192,6 +193,34 @@ def _format_leaf(response_text: str) -> dict[str, Any]:
         "thinking": "",
         "valid_response_format": True,
     }
+
+
+def _read_prompt_only_cache_index(entry: dict[str, Any], cache_file: Path) -> int:
+    if "oracle_rollout_index" in entry:
+        return int(entry.get("oracle_rollout_index"))
+    if "rollout_index" in entry:
+        raise ValueError(
+            "Prompt-only oracle cache entry is missing oracle_rollout_index "
+            f"and only has rollout_index. cache_file={cache_file}"
+        )
+    raise ValueError(
+        "Prompt-only oracle cache entry is missing oracle_rollout_index. "
+        f"cache_file={cache_file}"
+    )
+
+
+def _read_target_cache_rollout_index(entry: dict[str, Any], cache_file: Path) -> int:
+    if "rollout_index" in entry:
+        return int(entry.get("rollout_index"))
+    if "oracle_rollout_index" in entry:
+        raise ValueError(
+            "Target-backed oracle cache entry is missing rollout_index "
+            f"and only has oracle_rollout_index. cache_file={cache_file}"
+        )
+    raise ValueError(
+        "Target-backed oracle cache entry is missing rollout_index. "
+        f"cache_file={cache_file}"
+    )
 
 
 def _normalize_generation_kwargs(
@@ -400,7 +429,7 @@ def generate_deterministic_oracle_rollouts(
         if not isinstance(entry, dict):
             continue
         try:
-            idx = int(entry.get("rollout_index"))
+            idx = _read_target_cache_rollout_index(entry, cache_file)
         except Exception:
             continue
         existing_by_index[idx] = entry
@@ -448,6 +477,7 @@ def generate_deterministic_oracle_rollouts(
             eval_batch_size=eval_batch_size,
             oracle_repeats=1,
             oracle_input_types=oracle_input_types,
+            oracle_input_source_type="target_rollout",
             dist_ctx=dist_ctx,
             perf=perf,
         )
@@ -565,6 +595,7 @@ def generate_sampled_target_oracle_rollouts(
         eval_batch_size=eval_batch_size,
         oracle_repeats=num_oracle_rollouts,
         oracle_input_types=oracle_input_types,
+        oracle_input_source_type="target_rollout",
         dist_ctx=dist_ctx,
         perf=perf,
     )
@@ -660,7 +691,9 @@ def generate_prompt_only_oracle_rollouts(
         if not isinstance(entry, dict):
             continue
         try:
-            idx = int(entry.get("oracle_rollout_index"))
+            idx = _read_prompt_only_cache_index(entry, cache_file)
+        except ValueError:
+            raise
         except Exception:
             continue
         existing_by_index[idx] = entry
@@ -690,6 +723,7 @@ def generate_prompt_only_oracle_rollouts(
         eval_batch_size=eval_batch_size,
         oracle_repeats=num_oracle_rollouts,
         oracle_input_types=oracle_input_types,
+        oracle_input_source_type="prompt_only",
         dist_ctx=dist_ctx,
         perf=perf,
     )
@@ -785,6 +819,11 @@ def generate_oracle_rollouts_for_mode(
         )
 
     if mode == PROMPT_ONLY_REPEATS:
+        if target_rollout_entries:
+            print(
+                "[oracle prompt-only] ignoring target rollout entries; "
+                f"count={len(target_rollout_entries)} source=formatted_target_prompt_only"
+            )
         return generate_prompt_only_oracle_rollouts(
             model=model,
             tokenizer=tokenizer,

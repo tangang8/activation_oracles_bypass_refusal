@@ -333,11 +333,18 @@ def run_pipeline_for_target_prompt(
     combinations_processed = 0
     for oracle_prompt_index, oracle_prompt in enumerate(oracle_prompts):
         oracle_key = prompt_key(oracle_prompt)
+        oracle_input_source = "formatted_prompt_only" if cfg.oracle_rollout_mode == "prompt_only_repeats" else "target_rollouts"
+        if ctx.is_main and cfg.oracle_rollout_mode == "prompt_only_repeats" and oracle_source_entries:
+            print(
+                "[oracle prompt-only] target rollout entries are present but will be ignored "
+                f"(count={len(oracle_source_entries)} source={oracle_input_source})"
+            )
         t0 = perf_counter()
         if ctx.is_main:
             print(
-                f"[stage oracle rollout] target_prompt_index={target_prompt_index} "
-                f"oracle_prompt_index={oracle_prompt_index} target_key={target_key} oracle_key={oracle_key}"
+                f"[stage oracle rollout] mode={cfg.oracle_rollout_mode} input_source={oracle_input_source} "
+                f"target_prompt_index={target_prompt_index} oracle_prompt_index={oracle_prompt_index} "
+                f"target_key={target_key} oracle_key={oracle_key}"
             )
         with (
             perf.track(
@@ -381,8 +388,9 @@ def run_pipeline_for_target_prompt(
         if cfg.run_oracle_judging:
             if ctx.is_main:
                 print(
-                    f"[stage oracle judging] target_prompt_index={target_prompt_index} "
-                    f"oracle_prompt_index={oracle_prompt_index} target_key={target_key} oracle_key={oracle_key}"
+                    f"[stage oracle judging] mode={cfg.oracle_rollout_mode} input_source={oracle_input_source} "
+                    f"target_prompt_index={target_prompt_index} oracle_prompt_index={oracle_prompt_index} "
+                    f"target_key={target_key} oracle_key={oracle_key}"
                 )
             with (
                 perf.track(
@@ -448,11 +456,11 @@ def run_pipeline_for_target_prompt(
                     output_path=f"oracle_rollouts_report_{target_key}_{oracle_key}.html",
                 )
                 print(
-                    f"[target {target_prompt_index} oracle {oracle_prompt_index}] "
+                    f"[oracle reporting] target_prompt_index={target_prompt_index} oracle_prompt_index={oracle_prompt_index} "
                     f"Saved oracle report: {oracle_report_path}"
                 )
                 print(
-                    f"[target {target_prompt_index} oracle {oracle_prompt_index}] "
+                    f"[oracle reporting] target_prompt_index={target_prompt_index} oracle_prompt_index={oracle_prompt_index} "
                     f"Oracle rollouts cache: {oracle_cache_file}"
                 )
                 log_oracle_metrics(
@@ -472,7 +480,7 @@ def run_pipeline_for_target_prompt(
                 )
                 if oracle_judge_cache_file is not None:
                     print(
-                        f"[target {target_prompt_index} oracle {oracle_prompt_index}] "
+                        f"[oracle reporting] target_prompt_index={target_prompt_index} oracle_prompt_index={oracle_prompt_index} "
                         f"Oracle judged cache: {oracle_judge_cache_file}"
                     )
     return combinations_processed

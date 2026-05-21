@@ -183,6 +183,32 @@ class OracleModeRoutingTests(unittest.TestCase):
         run_oracle_kwargs = run_oracle_mock.call_args.kwargs
         self.assertEqual(run_oracle_kwargs["generation_kwargs"]["temperature"], 1.0)
         self.assertTrue(run_oracle_kwargs["generation_kwargs"]["do_sample"])
+        self.assertEqual(run_oracle_kwargs["oracle_input_source_type"], "prompt_only")
+
+    def test_prompt_only_cache_with_rollout_index_only_raises(self) -> None:
+        model = SimpleNamespace(config=SimpleNamespace(_name_or_path="Qwen/Qwen3-8B"))
+        tokenizer = object()
+
+        with (
+            patch("oracle_rollout_utils.format_user_target_prompt", return_value="FORMATTED_PROMPT"),
+            patch("oracle_rollout_utils.oracle_prompt_rollout_cache_file_path", return_value=Path("cache/prompt.json")),
+            patch(
+                "oracle_rollout_utils.load_json",
+                return_value=[{"rollout_index": 0, "oracle_response": {}, "oracle_format": {}}],
+            ),
+        ):
+            with self.assertRaises(ValueError):
+                generate_prompt_only_oracle_rollouts(
+                    model=model,
+                    tokenizer=tokenizer,
+                    device=torch.device("cpu"),
+                    oracle_prompt="oracle prompt",
+                    target_prompt="target prompt",
+                    target_model_name="Qwen/Qwen3-8B",
+                    target_lora_path="default",
+                    num_oracle_rollouts=2,
+                    oracle_generation_kwargs={"temperature": 0.25},
+                )
 
 
 if __name__ == "__main__":

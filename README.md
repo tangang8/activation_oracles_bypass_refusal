@@ -19,8 +19,8 @@ Use these exact sibling directory names:
 
 ```bash
 cd <parent-folder>
-git clone <YOUR_ACTIVATION_ORACLES_EXTENSIONS_REPO_URL> activation_oracles_extensions
-git clone <UPSTREAM_AUTHORS_ACTIVATION_ORACLES_REPO_URL> activation_oracles
+git clone git@github.com:tangang8/activation_oracles_extensions
+git clone git@github.com:adamkarvonen/activation_oracles
 ```
 
 ## Shared `.venv` installation at `<parent-folder>` root
@@ -35,23 +35,8 @@ source .venv/bin/activate
 uv sync --project activation_oracles --active
 ```
 
-Alternative venv creation (equivalent):
-
-```bash
-cd <parent-folder>
-uv venv .venv
-source .venv/bin/activate
-uv sync --project activation_oracles --active
-```
-
 This applies the upstream `activation_oracles/uv.lock` dependency set to the
 active shared environment.
-
-Optional cleanup if you previously created a repo-local venv:
-
-```bash
-rm -rf activation_oracles/.venv
-```
 
 If needed for model access:
 

@@ -269,6 +269,8 @@ def score_responses_compliance_batched(
     if batch_prompts:
         if item_ids is None:
             item_ids = [str(idx) for idx in batch_indices]
+        elif len(item_ids) == len(target_responses):
+            item_ids = [item_ids[idx] for idx in batch_indices]
         if len(item_ids) != len(batch_prompts):
             raise ValueError("item_ids must match the number of judge prompts.")
 
