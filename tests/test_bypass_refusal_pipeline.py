@@ -74,6 +74,14 @@ class BypassRefusalPipelineTests(unittest.TestCase):
         self.assertEqual(cfg.target_judge_batch_size, 16)
         self.assertEqual(cfg.target_prompt_offset, 0)
 
+    def test_experiment_config_loads_workspace_env_before_reads(self) -> None:
+        with (
+            patch("bypass_refusal._load_workspace_env") as load_env_mock,
+            patch.dict(os.environ, {"ORACLE_ADAPTER_PATH": "myorg/adapter"}, clear=True),
+        ):
+            br.ExperimentConfig.from_env()
+        load_env_mock.assert_called_once()
+
     def test_experiment_config_valid_integer_env_values_parse(self) -> None:
         with patch.dict(
             os.environ,

@@ -36,6 +36,12 @@ dtype = torch.bfloat16
 hf_logging.set_verbosity_error()
 
 EXTENSION_ROOT = Path(__file__).resolve().parent
+WORKSPACE_ENV_PATH = EXTENSION_ROOT.parent / ".env"
+
+
+def _load_workspace_env() -> None:
+    # Keep process env as source of truth; only fill unset values from /workspace/.env.
+    load_dotenv(dotenv_path=str(WORKSPACE_ENV_PATH), override=False)
 
 
 @dataclass
@@ -78,6 +84,7 @@ class ExperimentConfig:
 
     @classmethod
     def from_env(cls) -> "ExperimentConfig":
+        _load_workspace_env()
         oracle_rollout_mode = parse_oracle_rollout_mode(
             _env_str("ORACLE_ROLLOUT_MODE", DEFAULT_ORACLE_ROLLOUT_MODE)
         )
@@ -542,6 +549,7 @@ def run_pipeline_for_target_prompt(
 
 
 def main(cfg: ExperimentConfig) -> None:
+    _load_workspace_env()
     ctx = init_distributed()
     wandb_run = None
     perf: PerfLogger | None = None
@@ -683,9 +691,7 @@ def main(cfg: ExperimentConfig) -> None:
 
 
 def _require_hf_token() -> str:
-    # Load .env from workspace root (parent of this repo): /workspace/.env
-    env_path = Path(__file__).resolve().parent.parent / ".env"
-    load_dotenv(dotenv_path=str(env_path))
+    _load_workspace_env()
     token = os.getenv("HF_TOKEN")
     if not token:
         raise ValueError("Please set HF_TOKEN in your <parent_dir>/.env file")
