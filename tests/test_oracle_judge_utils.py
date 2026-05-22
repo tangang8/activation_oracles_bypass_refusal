@@ -57,8 +57,8 @@ class OracleJudgeUtilsTests(unittest.TestCase):
     def test_oracle_judge_summary(self) -> None:
         summary = oju._oracle_judge_summary(
             [
-                {"compliance": {"full_seq": {"score": 2}, "tokens": {"0": {"score": 4}}}},
-                {"compliance": {"full_seq": {"score": 4}}},
+                {"compliance": {"full_seq": {"score": 0.7}, "tokens": {"0": {"score": 0.3}}}},
+                {"compliance": {"full_seq": {"score": 1.0}}},
             ]
         )
         self.assertEqual(summary["oracle_judge/total_scored"], 3.0)

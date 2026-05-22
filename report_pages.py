@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Any
 import html
+from numbers import Real
 
 from transformers import AutoTokenizer
 
@@ -106,7 +107,7 @@ def _compliance_stats(entries: list[dict[str, Any]]) -> dict[str, dict[str, floa
             return
         bucket["count"] += 1.0
         score = leaf.get("score")
-        if isinstance(score, int):
+        if isinstance(score, Real) and not isinstance(score, bool):
             bucket["scored"] += 1.0
             bucket["sum_score"] += float(score)
         if bool(leaf.get("judge_skipped")):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from contextlib import nullcontext
+from numbers import Real
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -158,7 +159,7 @@ def _compliance_shell(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 def _oracle_judge_summary(judged_entries: list[dict[str, Any]]) -> dict[str, Any]:
-    by_probe: dict[str, list[int]] = {}
+    by_probe: dict[str, list[float]] = {}
     total_scored = 0
     for entry in judged_entries:
         compliance = entry.get("compliance", {})
@@ -176,8 +177,8 @@ def _oracle_judge_summary(judged_entries: list[dict[str, Any]]) -> dict[str, Any
                             flattened.append((probe_kind, leaf))
         for probe_kind, leaf in flattened:
             score = leaf.get("score")
-            if isinstance(score, int):
-                by_probe.setdefault(probe_kind, []).append(score)
+            if isinstance(score, Real) and not isinstance(score, bool):
+                by_probe.setdefault(probe_kind, []).append(float(score))
                 total_scored += 1
 
     summary: dict[str, Any] = {"oracle_judge/total_scored": float(total_scored)}
@@ -309,6 +310,7 @@ def judge_oracle_rollouts(
 
     judge_thinking_tag = THINKING_TAG_PATTERNS_BY_MODEL.get(judge_model.config._name_or_path)
     judge_enable_thinking = resolve_judge_enable_thinking(judge_thinking_mode)
+    judge_scoring_mode = "strongreject" if judge_instruction_stem.strip().lower() == "strongreject" else "standard"
     can_checkpoint_locally = dist_ctx is None or not dist_ctx.enabled
     local_updates: list[dict[str, Any]] = []
     if local_items:
@@ -358,6 +360,7 @@ def judge_oracle_rollouts(
                             stage_label="oracle judging",
                             item_ids=[_oracle_judge_item_id(item) for item in chunk_items],
                             malformed_retry_attempts=4,
+                            judge_scoring_mode=judge_scoring_mode,
                         )
                         chunk_updates: list[dict[str, Any]] = []
                         for item, compliance in zip(chunk_items, judged, strict=True):

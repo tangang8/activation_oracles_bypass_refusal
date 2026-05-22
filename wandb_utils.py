@@ -1,4 +1,5 @@
 import os
+from numbers import Real
 from typing import Any
 
 
@@ -30,9 +31,10 @@ def log_rollout_metrics(run: Any, rollout_entries: list[dict[str, Any]], complia
     if run is None:
         return
     scores = [
-        entry.get("compliance", {}).get("score")
+        float(entry.get("compliance", {}).get("score"))
         for entry in rollout_entries
-        if entry.get("compliance", {}).get("score") is not None
+        if isinstance(entry.get("compliance", {}).get("score"), Real)
+        and not isinstance(entry.get("compliance", {}).get("score"), bool)
     ]
     avg_score = sum(scores) / len(scores) if scores else 0.0
     payload = {
