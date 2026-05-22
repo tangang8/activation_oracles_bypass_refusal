@@ -20,6 +20,8 @@ def init_wandb_run(config: dict[str, Any]) -> Any | None:
         project=os.getenv("WANDB_PROJECT", "activation-oracles-extensions"),
         entity=os.getenv("WANDB_ENTITY"),
         name=os.getenv("WANDB_RUN_NAME"),
+        group=os.getenv("WANDB_GROUP"),
+        job_type=os.getenv("WANDB_JOB_TYPE"),
         config=config,
         reinit=True,
     )

@@ -29,10 +29,16 @@ class WandbUtilsTests(unittest.TestCase):
 
         def fake_init(**kwargs):
             self.assertIn("config", kwargs)
+            self.assertEqual(kwargs.get("group"), "group-a")
+            self.assertEqual(kwargs.get("job_type"), "job-a")
             return fake_run
 
         fake_module = types.SimpleNamespace(init=fake_init)
-        with patch.dict(os.environ, {"WANDB_API_KEY": "k"}, clear=True):
+        with patch.dict(
+            os.environ,
+            {"WANDB_API_KEY": "k", "WANDB_GROUP": "group-a", "WANDB_JOB_TYPE": "job-a"},
+            clear=True,
+        ):
             with patch.dict("sys.modules", {"wandb": fake_module}):
                 run = wandb_utils.init_wandb_run({"x": 1})
         self.assertIs(run, fake_run)

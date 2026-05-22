@@ -76,6 +76,7 @@ target_judge_batch_size=16                   # TARGET_JUDGE_BATCH_SIZE: batch si
 oracle_input_types=""                        # ORACLE_INPUT_TYPES: comma-separated oracle probes; empty uses mode defaults.
 oracle_token_point_filter="all"              # ORACLE_TOKEN_POINT_FILTER: all | post_prompt
 judge_thinking="off"                         # JUDGE_THINKING: default | off
+target_thinking="default"                    # TARGET_THINKING: default | off
 judge_instruction_path="strongReject_v5.jinja2"  # JUDGE_INSTRUCTION_PATH: judge prompt template file.
 oracle_prompts_path="prompts/oracle_prompts/default_oracle_prompts.json"  # ORACLE_PROMPTS_PATH: oracle prompt list file.
 wandb_run_name=""                            # WANDB_RUN_NAME: optional run display name.
@@ -134,6 +135,7 @@ Options:
   --judge-lora-path NAME         JUDGE_LORA_PATH (adapter name for judge stages)
   --oracle-lora-path NAME        ORACLE_LORA_PATH (adapter name for oracle rollout stage)
   --judge-thinking MODE          JUDGE_THINKING: default | off
+  --target-thinking MODE         TARGET_THINKING: default | off
   --wandb on|off                 Enable/disable Weights & Biases logging
   --wandb-run-name NAME          WANDB_RUN_NAME
   --set KEY=VALUE                Additional env var (repeatable)
@@ -190,6 +192,7 @@ TARGET_JUDGE_BATCH_SIZE_FROM_ENV="${TARGET_JUDGE_BATCH_SIZE+x}"
 ORACLE_INPUT_TYPES_FROM_ENV="${ORACLE_INPUT_TYPES+x}"
 ORACLE_TOKEN_POINT_FILTER_FROM_ENV="${ORACLE_TOKEN_POINT_FILTER+x}"
 JUDGE_THINKING_FROM_ENV="${JUDGE_THINKING+x}"
+TARGET_THINKING_FROM_ENV="${TARGET_THINKING+x}"
 JUDGE_INSTRUCTION_PATH_FROM_ENV="${JUDGE_INSTRUCTION_PATH+x}"
 ORACLE_PROMPTS_PATH_FROM_ENV="${ORACLE_PROMPTS_PATH+x}"
 ORACLE_ADAPTER_PATH_FROM_ENV="${ORACLE_ADAPTER_PATH+x}"
@@ -218,6 +221,7 @@ TARGET_JUDGE_BATCH_SIZE="${TARGET_JUDGE_BATCH_SIZE:-$target_judge_batch_size}"
 ORACLE_INPUT_TYPES="${ORACLE_INPUT_TYPES:-$oracle_input_types}"
 ORACLE_TOKEN_POINT_FILTER="${ORACLE_TOKEN_POINT_FILTER:-$oracle_token_point_filter}"
 JUDGE_THINKING="${JUDGE_THINKING:-$judge_thinking}"
+TARGET_THINKING="${TARGET_THINKING:-$target_thinking}"
 JUDGE_INSTRUCTION_PATH="${JUDGE_INSTRUCTION_PATH:-$judge_instruction_path}"
 ORACLE_PROMPTS_PATH="${ORACLE_PROMPTS_PATH:-$oracle_prompts_path}"
 ORACLE_ADAPTER_PATH="${ORACLE_ADAPTER_PATH:-}"
@@ -247,6 +251,7 @@ JUDGE_LORA_PATH_SET="false"
 EXPERIMENT_PRESET_SET="false"
 ORACLE_INPUT_TYPES_SET="false"
 ORACLE_TOKEN_POINT_FILTER_SET="false"
+TARGET_THINKING_SET="false"
 
 EXTRA_ENV_VARS=()
 while [[ $# -gt 0 ]]; do
@@ -266,6 +271,7 @@ while [[ $# -gt 0 ]]; do
     --oracle-input-types) ORACLE_INPUT_TYPES="$2"; ORACLE_INPUT_TYPES_SET="true"; shift 2 ;;
     --oracle-token-point-filter) ORACLE_TOKEN_POINT_FILTER="$2"; ORACLE_TOKEN_POINT_FILTER_SET="true"; shift 2 ;;
     --judge-thinking) JUDGE_THINKING="$2"; shift 2 ;;
+    --target-thinking) TARGET_THINKING="$2"; TARGET_THINKING_SET="true"; shift 2 ;;
     --judge-instruction-path) JUDGE_INSTRUCTION_PATH="$2"; shift 2 ;;
     --oracle-prompts-path) ORACLE_PROMPTS_PATH="$2"; shift 2 ;;
     --oracle-adapter-path) ORACLE_ADAPTER_PATH="$2"; ORACLE_ADAPTER_PATH_SET="true"; shift 2 ;;
@@ -351,6 +357,7 @@ case "$EXPERIMENT_PRESET" in
     set_preset_if_unset RUN_ORACLE_JUDGING "false" "$RUN_ORACLE_JUDGING_SET" "$RUN_ORACLE_JUDGING_FROM_ENV"
     set_preset_if_unset TARGET_LORA_PATH "$ORACLE_ADAPTER_NAME" "$TARGET_LORA_PATH_SET" "$TARGET_LORA_PATH_FROM_ENV"
     set_preset_if_unset ORACLE_LORA_PATH "$ORACLE_ADAPTER_NAME" "$ORACLE_LORA_PATH_SET" "$ORACLE_LORA_PATH_FROM_ENV"
+    set_preset_if_unset TARGET_THINKING "off" "$TARGET_THINKING_SET" "$TARGET_THINKING_FROM_ENV"
     ;;
   target_judging_only)
     set_preset_if_unset MODE "all_target_deterministic" "$MODE_SET" "$MODE_FROM_ENV"
@@ -463,6 +470,15 @@ case "$JUDGE_THINKING" in
     ;;
 esac
 
+case "$TARGET_THINKING" in
+  default|off) ;;
+  *)
+    echo "Invalid --target-thinking setting: $TARGET_THINKING (expected 'default' or 'off')" >&2
+    usage
+    exit 1
+    ;;
+esac
+
 case "$ORACLE_TOKEN_POINT_FILTER" in
   all|post_prompt) ;;
   *)
@@ -499,6 +515,7 @@ export ORACLE_JUDGE_BATCH_SIZE="$ORACLE_JUDGE_BATCH_SIZE"
 export TARGET_JUDGE_BATCH_SIZE="$TARGET_JUDGE_BATCH_SIZE"
 export ORACLE_TOKEN_POINT_FILTER="$ORACLE_TOKEN_POINT_FILTER"
 export JUDGE_THINKING="$JUDGE_THINKING"
+export TARGET_THINKING="$TARGET_THINKING"
 export JUDGE_INSTRUCTION_PATH="$JUDGE_INSTRUCTION_PATH"
 export ORACLE_ADAPTER_PATH="$ORACLE_ADAPTER_PATH"
 export ORACLE_ADAPTER_NAME="$ORACLE_ADAPTER_NAME"
@@ -547,6 +564,7 @@ Running bypass_refusal.py with:
   ORACLE_INPUT_TYPES=${ORACLE_INPUT_TYPES:-<mode default>}
   ORACLE_TOKEN_POINT_FILTER=$ORACLE_TOKEN_POINT_FILTER
   JUDGE_THINKING=$JUDGE_THINKING
+  TARGET_THINKING=$TARGET_THINKING
   JUDGE_INSTRUCTION_PATH=$JUDGE_INSTRUCTION_PATH
   ORACLE_PROMPTS_PATH=${ORACLE_PROMPTS_PATH:-<default>}
   ORACLE_ADAPTER_PATH=$ORACLE_ADAPTER_PATH

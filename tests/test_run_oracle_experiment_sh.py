@@ -31,6 +31,7 @@ class RunScriptTests(unittest.TestCase):
                 "echo \"JUDGE_LORA_PATH=${JUDGE_LORA_PATH:-}\"\n"
                 "echo \"ORACLE_LORA_PATH=${ORACLE_LORA_PATH:-}\"\n"
                 "echo \"JUDGE_THINKING=${JUDGE_THINKING:-}\"\n"
+                "echo \"TARGET_THINKING=${TARGET_THINKING:-}\"\n"
                 "echo \"TARGET_JUDGE_BATCH_SIZE=${TARGET_JUDGE_BATCH_SIZE:-}\"\n"
                 "echo \"ORACLE_INPUT_TYPES=${ORACLE_INPUT_TYPES:-}\"\n"
                 "echo \"ORACLE_TOKEN_POINT_FILTER=${ORACLE_TOKEN_POINT_FILTER:-}\"\n"
@@ -66,6 +67,7 @@ class RunScriptTests(unittest.TestCase):
         self.assertIn("--judge-instruction-path PATH", proc.stdout)
         self.assertIn("--oracle-prompts-path PATH", proc.stdout)
         self.assertIn("--judge-thinking MODE", proc.stdout)
+        self.assertIn("--target-thinking MODE", proc.stdout)
 
     def test_invalid_mode(self) -> None:
         proc = subprocess.run([str(SCRIPT), "--mode", "bad"], capture_output=True, text=True, check=False)
@@ -112,6 +114,11 @@ class RunScriptTests(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("Invalid --oracle-token-point-filter setting", proc.stderr)
 
+    def test_invalid_target_thinking(self) -> None:
+        proc = subprocess.run([str(SCRIPT), "--target-thinking", "maybe"], capture_output=True, text=True, check=False)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("Invalid --target-thinking setting", proc.stderr)
+
     def test_preset_oracle_target_control_exports_expected_flags(self) -> None:
         proc = self._run_with_fake_python("--preset", "oracle_target_control", "--mode", "all_target_deterministic")
         self.assertEqual(proc.returncode, 0)
@@ -120,8 +127,14 @@ class RunScriptTests(unittest.TestCase):
         self.assertIn("RUN_TARGET_JUDGING=true", proc.stdout)
         self.assertIn("RUN_ORACLE_ROLLOUTS=false", proc.stdout)
         self.assertIn("RUN_ORACLE_JUDGING=false", proc.stdout)
+        self.assertIn("TARGET_THINKING=off", proc.stdout)
         self.assertIn("ORACLE_PROMPTS_PATH=prompts/oracle_prompts/default_oracle_prompts.json", proc.stdout)
         self.assertIn("JUDGE_INSTRUCTION_PATH=strongReject_v5.jinja2", proc.stdout)
+
+    def test_target_thinking_cli_override_exports(self) -> None:
+        proc = self._run_with_fake_python("--target-thinking", "off")
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("TARGET_THINKING=off", proc.stdout)
 
     def test_preset_prompt_only_oracle_exports_expected_flags(self) -> None:
         proc = self._run_with_fake_python("--preset", "prompt_only_oracle")

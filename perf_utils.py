@@ -129,7 +129,9 @@ class PerfLogger:
         if metadata:
             for k, v in metadata.items():
                 payload[f"meta/{k}"] = v
-        self.wandb_run.log(payload, step=self.step)
+        # Let W&B manage the global step so perf logs don't collide with other
+        # module logs that don't provide an explicit step.
+        self.wandb_run.log(payload)
         self.step += 1
 
     @contextmanager

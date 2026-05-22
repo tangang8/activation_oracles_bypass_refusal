@@ -37,11 +37,22 @@ class CacheUtilsTests(unittest.TestCase):
             target_lora_path="default",
             generation_kwargs={"temperature": 1.0},
             user_prompt="hello",
+            target_thinking_mode="default",
         )
         s = str(path)
         self.assertIn("target_Qwen_Qwen3-8B", s)
         self.assertIn("target_rollouts_temp-1.0", s)
         self.assertTrue(s.endswith(".json"))
+
+        off_path = target_rollout_cache_file_path(
+            cache_root="cache",
+            target_model_name="Qwen/Qwen3-8B",
+            target_lora_path="default",
+            generation_kwargs={"temperature": 1.0},
+            user_prompt="hello",
+            target_thinking_mode="off",
+        )
+        self.assertIn("target-thinking-off", str(off_path))
 
     def test_oracle_paths(self) -> None:
         oracle_path = oracle_cache_file_path(
@@ -87,6 +98,7 @@ class CacheUtilsTests(unittest.TestCase):
             judge_model_name="Qwen/Qwen3-8B",
             judge_lora_path="default",
             generation_kwargs={"temperature": 1.0},
+            target_thinking_mode="default",
             judge_thinking_mode="off",
             judge_instruction_stem="my/stem",
             user_prompt="prompt",
@@ -118,11 +130,27 @@ class CacheUtilsTests(unittest.TestCase):
             judge_model_name="Qwen/Qwen3-8B",
             judge_lora_path="default",
             generation_kwargs={"temperature": 1.0},
+            target_thinking_mode="default",
             judge_thinking_mode="default",
             judge_instruction_stem="my/stem",
             user_prompt="prompt",
         )
         self.assertIn("thinking-default", str(target_judge_default))
+
+        target_judge_target_thinking_off = judge_cache_file_path(
+            cache_root="cache",
+            target_model_name="Qwen/Qwen3-8B",
+            target_lora_path="default",
+            judge_model_name="Qwen/Qwen3-8B",
+            judge_lora_path="default",
+            generation_kwargs={"temperature": 1.0},
+            target_thinking_mode="off",
+            judge_thinking_mode="off",
+            judge_instruction_stem="my/stem",
+            user_prompt="prompt",
+        )
+        self.assertIn("target-thinking-off", str(target_judge_target_thinking_off))
+        self.assertNotIn("thinking-default", str(target_judge_target_thinking_off))
 
     def test_load_and_write_json(self) -> None:
         with tempfile.TemporaryDirectory() as td:

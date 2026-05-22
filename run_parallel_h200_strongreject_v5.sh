@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 timestamp="$(date +%Y%m%d_%H%M%S)"
+RUN_LABEL="${RUN_LABEL:-parallel_h200_${timestamp}}"
+RUN_ORACLE_EXPERIMENT="${RUN_ORACLE_EXPERIMENT:-./run_oracle_experiment.sh}"
 
 TARGET_PROMPT_TOTAL="${TARGET_PROMPT_TOTAL:-100}"
 TARGET_PROMPT_SPLIT="${TARGET_PROMPT_SPLIT:-50}"
@@ -15,7 +17,7 @@ DEFAULT_ORACLE_PROMPTS_PATH="${DEFAULT_ORACLE_PROMPTS_PATH:-prompts/oracle_promp
 SECOND_ORACLE_PROMPTS_PATH="${SECOND_ORACLE_PROMPTS_PATH:-prompts/oracle_prompts/model_answer_min_200_words.json}"
 JUDGE_INSTRUCTION_PATH="${JUDGE_INSTRUCTION_PATH:-strongReject_v5.jinja2}"
 JUDGE_THINKING="${JUDGE_THINKING:-off}"
-LOG_ROOT="${LOG_ROOT:-logs/parallel_h200_${timestamp}}"
+LOG_ROOT="${LOG_ROOT:-logs/${RUN_LABEL}}"
 WANDB_SETTING="${WANDB_SETTING:-on}"
 
 GPU_TARGET_A="${GPU_TARGET_A:-0}"
@@ -30,6 +32,7 @@ ORACLE_JUDGE_BATCH_SIZE="${ORACLE_JUDGE_BATCH_SIZE:-64}"
 FULL_DETERMINISTIC_PRESET="${FULL_DETERMINISTIC_PRESET:-rollout_post_prompt_oracle}"
 
 DRY_RUN="${DRY_RUN:-0}"
+PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 mkdir -p "$LOG_ROOT"
 DRIVER_LOG="$LOG_ROOT/parallel_driver.log"
@@ -61,7 +64,7 @@ ensure_distinct_gpus() {
 
 is_oom_log() {
   local log_file="$1"
-  grep -Eiq 'out of memory|cuda.*oom|cuda.*out.*memory|cublas.*alloc|cannot allocate memory' "$log_file"
+  grep -Eiq 'torch\.OutOfMemoryError|CUDA out of memory|out of memory|cuda.*oom|cuda.*out.*memory|cublas.*alloc|cannot allocate memory' "$log_file"
 }
 
 quote_cmd() {
@@ -80,13 +83,17 @@ run_attempt() {
 
   log "Starting GPU $gpu attempt: $(quote_cmd "$@")"
   log "Attempt log: $log_file"
-  if CUDA_VISIBLE_DEVICES="$gpu" "$@" >"$log_file" 2>&1; then
+  set +e
+  CUDA_VISIBLE_DEVICES="$gpu" PYTORCH_CUDA_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF" "$@" >"$log_file" 2>&1
+  local status=$?
+  set -e
+  if [[ "$status" -eq 0 ]]; then
     log "Finished GPU $gpu attempt successfully: $(basename "$log_file")"
     return 0
+  else
+    log "GPU $gpu attempt failed with exit code $status: $(basename "$log_file")"
+    return "$status"
   fi
-  local status=$?
-  log "GPU $gpu attempt failed with exit code $status: $(basename "$log_file")"
-  return "$status"
 }
 
 run_target_job() {
@@ -102,7 +109,7 @@ run_target_job() {
   for batch in "${batch_sizes[@]}"; do
     attempt=$((attempt + 1))
     log_file="$LOG_ROOT/${job_name}_attempt-${attempt}_target-judge-batch-${batch}.log"
-    if run_attempt "$gpu" "$log_file" ./run_oracle_experiment.sh \
+    if run_attempt "$gpu" "$log_file" "$RUN_ORACLE_EXPERIMENT" \
       --preset target_judging_only \
       --target-prompt-offset "$offset" \
       --target-prompt-limit "$limit" \
@@ -111,7 +118,9 @@ run_target_job() {
       --judge-instruction-path "$JUDGE_INSTRUCTION_PATH" \
       --judge-thinking "$JUDGE_THINKING" \
       --wandb "$WANDB_SETTING" \
-      --wandb-run-name "$job_name"; then
+      --wandb-run-name "${RUN_LABEL}__${job_name}" \
+      --set "WANDB_GROUP=$RUN_LABEL" \
+      --set "WANDB_JOB_TYPE=$job_name"; then
       return 0
     fi
     if [[ "$DRY_RUN" == "1" ]] || ! is_oom_log "$log_file"; then
@@ -149,14 +158,16 @@ run_oracle_job() {
     seen_pairs+="$pair "
     attempt=$((attempt + 1))
     log_file="$LOG_ROOT/${job_name}_attempt-${attempt}_oracle-eval-${eval_batch}_oracle-judge-${judge_batch}.log"
-    if run_attempt "$gpu" "$log_file" ./run_oracle_experiment.sh \
+    if run_attempt "$gpu" "$log_file" "$RUN_ORACLE_EXPERIMENT" \
       "${base_args[@]}" \
       --oracle-eval-batch-size "$eval_batch" \
       --oracle-judge-batch-size "$judge_batch" \
       --judge-instruction-path "$JUDGE_INSTRUCTION_PATH" \
       --judge-thinking "$JUDGE_THINKING" \
       --wandb "$WANDB_SETTING" \
-      --wandb-run-name "$job_name"; then
+      --wandb-run-name "${RUN_LABEL}__${job_name}" \
+      --set "WANDB_GROUP=$RUN_LABEL" \
+      --set "WANDB_JOB_TYPE=$job_name"; then
       return 0
     fi
     if [[ "$DRY_RUN" == "1" ]] || ! is_oom_log "$log_file"; then
@@ -219,16 +230,19 @@ run_oracle_target_control_once() {
   for batch in "${batch_sizes[@]}"; do
     attempt=$((attempt + 1))
     log_file="$LOG_ROOT/gpu${gpu}_oracle_target_control_attempt-${attempt}_target-judge-batch-${batch}.log"
-    if run_attempt "$gpu" "$log_file" ./run_oracle_experiment.sh \
+    if run_attempt "$gpu" "$log_file" "$RUN_ORACLE_EXPERIMENT" \
       --preset oracle_target_control \
       --target-prompt-offset 0 \
       --target-prompt-limit "$TARGET_PROMPT_TOTAL" \
       --num-rollouts "$NUM_ROLLOUTS" \
       --target-judge-batch-size "$batch" \
+      --target-thinking off \
       --judge-instruction-path "$JUDGE_INSTRUCTION_PATH" \
       --judge-thinking "$JUDGE_THINKING" \
       --wandb "$WANDB_SETTING" \
-      --wandb-run-name "gpu${gpu}_oracle_target_control"; then
+      --wandb-run-name "${RUN_LABEL}__gpu${gpu}_oracle_target_control" \
+      --set "WANDB_GROUP=$RUN_LABEL" \
+      --set "WANDB_JOB_TYPE=gpu${gpu}_oracle_target_control"; then
       return 0
     fi
     if [[ "$DRY_RUN" == "1" ]] || ! is_oom_log "$log_file"; then
@@ -254,7 +268,7 @@ if (( shard_b_limit < 0 )); then
   die "TARGET_PROMPT_SPLIT ($TARGET_PROMPT_SPLIT) cannot exceed TARGET_PROMPT_TOTAL ($TARGET_PROMPT_TOTAL)."
 fi
 
-log "Parallel H200 run starting. Logs: $LOG_ROOT"
+log "Parallel H200 run starting. run_label=$RUN_LABEL logs=$LOG_ROOT"
 log "Shard A offset=$shard_a_offset limit=$shard_a_limit on GPU $GPU_TARGET_A"
 log "Shard B offset=$shard_b_offset limit=$shard_b_limit on GPU $GPU_TARGET_B"
 log "Prompt-only default then min-200 on GPU $GPU_PROMPT_ONLY"

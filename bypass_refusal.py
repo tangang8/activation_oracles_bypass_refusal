@@ -63,6 +63,7 @@ class ExperimentConfig:
     target_judge_batch_size: int
     oracle_input_types: list[str] | None
     oracle_token_point_filter: str
+    target_thinking_mode: str
     target_prompt_offset: int
     target_prompt_limit: int
     run_target_rollouts: bool
@@ -105,6 +106,7 @@ class ExperimentConfig:
         judge_lora_path = _env_str("JUDGE_LORA_PATH", "default")
         oracle_lora_path = _env_str("ORACLE_LORA_PATH", oracle_adapter_name)
         judge_thinking_mode = _env_str("JUDGE_THINKING", "off")
+        target_thinking_mode = _env_str("TARGET_THINKING", "default")
 
         if not any((run_target_rollouts, run_target_judging, run_oracle_rollouts, run_oracle_judging)):
             raise ValueError("At least one pipeline stage must be enabled.")
@@ -120,6 +122,10 @@ class ExperimentConfig:
         if judge_thinking_mode not in {"default", "off"}:
             raise ValueError(
                 f"Invalid JUDGE_THINKING={judge_thinking_mode!r}. Expected one of: default, off."
+            )
+        if target_thinking_mode not in {"default", "off"}:
+            raise ValueError(
+                f"Invalid TARGET_THINKING={target_thinking_mode!r}. Expected one of: default, off."
             )
         oracle_token_point_filter = _env_str("ORACLE_TOKEN_POINT_FILTER", "all")
         if oracle_token_point_filter not in {"all", "post_prompt"}:
@@ -172,6 +178,7 @@ class ExperimentConfig:
             target_judge_batch_size=_env_int("TARGET_JUDGE_BATCH_SIZE", 16),
             oracle_input_types=oracle_input_types,
             oracle_token_point_filter=oracle_token_point_filter,
+            target_thinking_mode=target_thinking_mode,
             target_prompt_offset=_env_int("TARGET_PROMPT_OFFSET", 0),
             target_prompt_limit=_env_int("TARGET_PROMPT_LIMIT", 100),
             run_target_rollouts=run_target_rollouts,
@@ -288,7 +295,10 @@ def run_pipeline_for_target_prompt(
     judge_instruction_template: str,
 ) -> int:
     target_key = prompt_key(target_prompt_str)
-    formatted_target_prompt = format_user_target_prompt(tokenizer, target_prompt_str)
+    target_enable_thinking = False if cfg.target_thinking_mode == "off" else None
+    formatted_target_prompt = format_user_target_prompt(
+        tokenizer, target_prompt_str, enable_thinking=target_enable_thinking
+    )
     target_rollout_entries: list[dict[str, Any]] = []
     judged_rollout_entries: list[dict[str, Any]] = []
     target_cache_file: str | Path | None = None
@@ -320,6 +330,7 @@ def run_pipeline_for_target_prompt(
                 num_rollouts=cfg.num_rollouts,
                 device=ctx.device,
                 target_lora_path=cfg.target_lora_path,
+                target_thinking_mode=cfg.target_thinking_mode,
                 cache_root="cache",
                 dist_ctx=ctx,
                 perf=perf,
@@ -358,6 +369,7 @@ def run_pipeline_for_target_prompt(
                     target_lora_path=cfg.target_lora_path,
                     judge_lora_path=cfg.judge_lora_path,
                     judge_thinking_mode=cfg.judge_thinking_mode,
+                    target_thinking_mode=cfg.target_thinking_mode,
                     target_judge_batch_size=cfg.target_judge_batch_size,
                     cache_root="cache",
                     dist_ctx=ctx,
@@ -616,6 +628,7 @@ def main(cfg: ExperimentConfig) -> None:
                 "oracle_input_types": cfg.oracle_input_types,
                 "oracle_token_point_filter": cfg.oracle_token_point_filter,
                 "judge_thinking_mode": cfg.judge_thinking_mode,
+                "target_thinking_mode": cfg.target_thinking_mode,
                 "judge_instruction_file": cfg.judge_instruction_path,
                 "target_prompt_offset": cfg.target_prompt_offset,
                 "target_prompt_limit": cfg.target_prompt_limit,

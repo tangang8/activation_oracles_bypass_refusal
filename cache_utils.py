@@ -43,6 +43,12 @@ def _rollouts_dir_name(base_name: str, generation_kwargs: dict) -> str:
     return f"{base_name}_temp-{temp}"
 
 
+def _optional_mode_suffix(prefix: str, mode: str, *, default_mode: str = "default") -> str:
+    if mode == default_mode:
+        return ""
+    return f"_{sanitize_for_path(f'{prefix}-{mode}')}"
+
+
 def _cache_prompt_file_name(prompt_text: str) -> str:
     return f"{preview_hash_name(prompt_text, preview_len=48, hash_len=16)}.json"
 
@@ -72,6 +78,7 @@ def target_rollout_cache_file_path(
     target_lora_path: str | None,
     generation_kwargs: dict,
     user_prompt: str,
+    target_thinking_mode: str = "default",
 ) -> Path:
     """
     Build target rollout cache file path (independent of judging).
@@ -89,6 +96,9 @@ def target_rollout_cache_file_path(
         target_lora_name=target_lora_name,
         generation_kwargs=generation_kwargs,
     )
+    thinking_suffix = _optional_mode_suffix("target-thinking", target_thinking_mode)
+    if thinking_suffix:
+        cache_dir = cache_dir.with_name(f"{cache_dir.name}{thinking_suffix}")
     return cache_dir / prompt_file
 
 
@@ -100,6 +110,7 @@ def judge_cache_file_path(
     judge_lora_path: str | None,
     generation_kwargs: dict,
     judge_thinking_mode: str,
+    target_thinking_mode: str,
     judge_instruction_stem: str,
     user_prompt: str,
 ) -> Path:
@@ -124,7 +135,8 @@ def judge_cache_file_path(
         if judge_thinking_mode == "default"
         else ""
     )
-    judge_temp_dir = Path(f"{judge_dir}_temp-{temp}{judge_thinking_suffix}")
+    target_thinking_suffix = _optional_mode_suffix("target-thinking", target_thinking_mode)
+    judge_temp_dir = Path(f"{judge_dir}_temp-{temp}{target_thinking_suffix}{judge_thinking_suffix}")
     return (
         Path(cache_root)
         / target_dir

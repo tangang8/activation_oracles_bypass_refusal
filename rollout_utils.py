@@ -657,6 +657,7 @@ def generate_target_rollouts(
     num_rollouts: int,
     device: torch.device,
     target_lora_path: str | None = "default",
+    target_thinking_mode: str = "default",
     cache_root: str = "cache",
     max_retry_factor: int = 10,
     dist_ctx: DistributedContext | None = None,
@@ -676,6 +677,7 @@ def generate_target_rollouts(
         target_lora_path=target_lora_path,
         generation_kwargs=generation_kwargs_stochastic,
         user_prompt=user_prompt,
+        target_thinking_mode=target_thinking_mode,
     )
 
     loaded_entries = load_json(cache_file)
@@ -865,6 +867,7 @@ def judge_target_rollouts(
     cache_root: str = "cache",
     judge_generation_kwargs: dict[str, Any] | None = None,
     judge_thinking_mode: str = "default",
+    target_thinking_mode: str = "default",
     target_judge_batch_size: int = 16,
     dist_ctx: DistributedContext | None = None,
     perf: PerfLogger | None = None,
@@ -886,6 +889,7 @@ def judge_target_rollouts(
         judge_lora_path=judge_lora_path,
         generation_kwargs=judge_generation_kwargs,
         judge_thinking_mode=judge_thinking_mode,
+        target_thinking_mode=target_thinking_mode,
         judge_instruction_stem=judge_instruction_stem,
         user_prompt=user_prompt,
     )

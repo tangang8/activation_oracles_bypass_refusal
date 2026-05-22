@@ -38,6 +38,7 @@ class BypassRefusalPipelineTests(unittest.TestCase):
             target_judge_batch_size=2,
             oracle_input_types=None,
             oracle_token_point_filter="all",
+            target_thinking_mode="default",
             target_prompt_offset=0,
             target_prompt_limit=1,
             run_target_rollouts=True,
@@ -73,6 +74,7 @@ class BypassRefusalPipelineTests(unittest.TestCase):
         self.assertEqual(cfg.oracle_adapter_path, "myorg/adapter")
         self.assertEqual(cfg.target_judge_batch_size, 16)
         self.assertEqual(cfg.target_prompt_offset, 0)
+        self.assertEqual(cfg.target_thinking_mode, "default")
 
     def test_experiment_config_loads_workspace_env_before_reads(self) -> None:
         with (
@@ -108,6 +110,30 @@ class BypassRefusalPipelineTests(unittest.TestCase):
             clear=True,
         ):
             with self.assertRaisesRegex(ValueError, "Invalid integer value for NUM_ROLLOUTS"):
+                br.ExperimentConfig.from_env()
+
+    def test_experiment_config_target_thinking_from_env(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ORACLE_ADAPTER_PATH": "myorg/adapter",
+                "TARGET_THINKING": "off",
+            },
+            clear=True,
+        ):
+            cfg = br.ExperimentConfig.from_env()
+        self.assertEqual(cfg.target_thinking_mode, "off")
+
+    def test_experiment_config_invalid_target_thinking_raises(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ORACLE_ADAPTER_PATH": "myorg/adapter",
+                "TARGET_THINKING": "maybe",
+            },
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "Invalid TARGET_THINKING"):
                 br.ExperimentConfig.from_env()
 
     def test_experiment_config_uses_explicit_env_stage_values(self) -> None:
@@ -267,6 +293,41 @@ class BypassRefusalPipelineTests(unittest.TestCase):
 
         self.assertEqual(combos, 1)
         judge_oracle_mock.assert_not_called()
+
+    def test_target_thinking_off_formats_prompt_without_thinking(self) -> None:
+        model = SimpleNamespace(config=SimpleNamespace(_name_or_path="Qwen/Qwen3-8B"))
+        tokenizer = object()
+        ctx = SimpleNamespace(is_main=False, rank=0, world_size=1, device="cpu", enabled=False)
+        perf = _FakePerf()
+
+        with (
+            patch("bypass_refusal.format_user_target_prompt", return_value="formatted") as format_prompt_mock,
+            patch("bypass_refusal.generate_target_rollouts", return_value=([], "target.json")),
+            patch("bypass_refusal.judge_target_rollouts"),
+            patch("bypass_refusal.generate_oracle_rollouts_for_mode"),
+            patch("bypass_refusal.judge_oracle_rollouts"),
+        ):
+            br.run_pipeline_for_target_prompt(
+                model=model,
+                tokenizer=tokenizer,
+                ctx=ctx,
+                wandb_run=None,
+                perf=perf,
+                cfg=self._base_config(
+                    target_thinking_mode="off",
+                    run_target_judging=False,
+                    run_oracle_rollouts=False,
+                    run_oracle_judging=False,
+                ),
+                target_prompt_str="tp",
+                target_prompt_index=0,
+                oracle_prompts=[],
+                judge_instruction_file="f",
+                judge_instruction_stem="s",
+                judge_instruction_template="tmpl",
+            )
+
+        self.assertEqual(format_prompt_mock.call_args.kwargs["enable_thinking"], False)
 
     def test_main_uses_global_target_prompt_indices_for_shards(self) -> None:
         ctx = SimpleNamespace(is_main=True, rank=0, world_size=1, local_rank=0, device=SimpleNamespace(type="cpu"), enabled=False)
