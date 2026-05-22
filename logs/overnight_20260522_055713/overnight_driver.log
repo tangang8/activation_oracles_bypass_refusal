@@ -1,0 +1,16 @@
+Overnight run directory: logs/overnight_20260522_055713
+JUDGE_INSTRUCTION_PATH=strongReject_v5.jinja2
+TARGET_PROMPT_LIMIT=1
+NUM_ORACLE_ROLLOUTS=1
+NUM_ROLLOUTS=1
+DRY_RUN=0
+
+[Fri May 22 05:57:13 UTC 2026] running: ./run_oracle_experiment.sh --preset prompt_only_oracle --target-prompt-limit 1 --num-oracle-rollouts 1 --oracle-eval-batch-size 32 --oracle-judge-batch-size 16 --judge-instruction-path strongReject_v5.jinja2 
+[Fri May 22 05:57:13 UTC 2026] log: logs/overnight_20260522_055713/prompt_only_oracle_attempt_1_eval-32_judge-16.log
+[Fri May 22 05:58:01 UTC 2026] prompt-only oracle succeeded on attempt 1
+
+[Fri May 22 05:58:01 UTC 2026] running: ./run_oracle_experiment.sh --preset target_judging_only --target-prompt-limit 1 --num-rollouts 1 --target-judge-batch-size 16 --judge-instruction-path strongReject_v5.jinja2 
+[Fri May 22 05:58:01 UTC 2026] log: logs/overnight_20260522_055713/target_judging_only_attempt_1_target-judge-16.log
+[Fri May 22 05:58:55 UTC 2026] target judging succeeded on attempt 1
+
+[Fri May 22 05:58:55 UTC 2026] overnight run completed successfully
