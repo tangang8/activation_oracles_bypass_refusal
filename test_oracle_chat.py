@@ -265,10 +265,27 @@ def main() -> None:
         action="store_true",
         help="Do not fail when no thinking tags are present.",
     )
+    parser.add_argument(
+        "--target-thinking",
+        choices=("default", "off"),
+        default="off",
+        help=(
+            "Thinking mode when formatting target prompts with apply_chat_template. "
+            "'off' passes enable_thinking=False; 'default' leaves tokenizer defaults."
+        ),
+    )
+    parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=MAX_NEW_TOKENS,
+        help=f"Generation cap for each prompt completion (default: {MAX_NEW_TOKENS}).",
+    )
     args = parser.parse_args()
 
     if args.num_prompts <= 0:
         raise ValueError("--num-prompts must be >= 1")
+    if args.max_new_tokens <= 0:
+        raise ValueError("--max-new-tokens must be >= 1")
 
     prompts = load_target_prompts_from_dataset(limit=args.num_prompts, offset=args.offset)
     if len(prompts) < args.num_prompts:
@@ -298,7 +315,8 @@ def main() -> None:
     print(f"Running {args.num_prompts} prompt(s) in one batch (offset={args.offset})")
     print(f"Model: {MODEL_NAME}")
     print(f"LoRA adapter: {args.lora_adapter} (loaded from {ORACLE_ADAPTER_PATH})")
-    print(f"Device: {device}  max_new_tokens: {MAX_NEW_TOKENS}")
+    print(f"Target thinking: {args.target_thinking}")
+    print(f"Device: {device}  max_new_tokens: {args.max_new_tokens}")
 
     tokenizer, model = load_model_stack(
         model_name=MODEL_NAME,
@@ -318,10 +336,14 @@ def main() -> None:
     generation_kwargs = {
         "do_sample": True,
         "temperature": 1.0,
-        "max_new_tokens": MAX_NEW_TOKENS,
+        "max_new_tokens": args.max_new_tokens,
     }
 
-    formatted_prompts = [format_user_target_prompt(tokenizer, p) for p in prompts]
+    target_enable_thinking = False if args.target_thinking == "off" else None
+    formatted_prompts = [
+        format_user_target_prompt(tokenizer, p, enable_thinking=target_enable_thinking)
+        for p in prompts
+    ]
 
     t0 = perf_counter()
     responses, responses_with_special = _batched_generate_dual_decode(
