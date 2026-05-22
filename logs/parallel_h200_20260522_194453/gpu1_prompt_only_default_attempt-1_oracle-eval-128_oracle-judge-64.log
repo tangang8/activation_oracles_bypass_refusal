@@ -1,0 +1,70 @@
+Running bypass_refusal.py with:
+  MODEL_NAME=Qwen/Qwen3-8B
+  ORACLE_ROLLOUT_MODE=prompt_only_repeats
+  NUM_ROLLOUTS=50
+  K_ROLLOUTS=10
+  NUM_ORACLE_ROLLOUTS=50
+  TARGET_PROMPT_OFFSET=0
+  TARGET_PROMPT_LIMIT=100
+  MAX_NEW_TOKENS=10000
+  ORACLE_MAX_NEW_TOKENS=1000
+  ORACLE_EVAL_BATCH_SIZE=128
+  ORACLE_JUDGE_BATCH_SIZE=64
+  TARGET_JUDGE_BATCH_SIZE=16
+  ORACLE_INPUT_TYPES=<mode default>
+  ORACLE_TOKEN_POINT_FILTER=all
+  JUDGE_THINKING=off
+  JUDGE_INSTRUCTION_PATH=strongReject_v5.jinja2
+  ORACLE_PROMPTS_PATH=prompts/oracle_prompts/default_oracle_prompts.json
+  ORACLE_ADAPTER_PATH=adamkarvonen/checkpoints_latentqa_cls_past_lens_addition_Qwen3-8B
+  ORACLE_ADAPTER_NAME=oracle
+  EXPERIMENT_PRESET=prompt_only_oracle
+  RUN_TARGET_ROLLOUTS=false
+  RUN_TARGET_JUDGING=false
+  RUN_ORACLE_ROLLOUTS=true
+  RUN_ORACLE_JUDGING=true
+  TARGET_LORA_PATH=default
+  JUDGE_LORA_PATH=default
+  ORACLE_LORA_PATH=oracle
+  WANDB=on
+  WANDB_MODE=<unset>
+  WANDB_RUN_NAME=gpu1_prompt_only_default
+[wandb] WANDB_API_KEY not set; skipping logging.
+Loading tokenizer: Qwen/Qwen3-8B
+Loading model: Qwen/Qwen3-8B
+Loading checkpoint shards:   0%|          | 0/5 [00:00<?, ?it/s]Loading checkpoint shards:  20%|██        | 1/5 [00:00<00:03,  1.13it/s]Loading checkpoint shards:  40%|████      | 2/5 [00:01<00:02,  1.12it/s]Loading checkpoint shards:  60%|██████    | 3/5 [00:02<00:01,  1.12it/s]Loading checkpoint shards:  80%|████████  | 4/5 [00:03<00:00,  1.22it/s]Loading checkpoint shards: 100%|██████████| 5/5 [00:03<00:00,  1.61it/s]Loading checkpoint shards: 100%|██████████| 5/5 [00:03<00:00,  1.37it/s]
+Loading adapter 'oracle' from: adamkarvonen/checkpoints_latentqa_cls_past_lens_addition_Qwen3-8B
+/workspace/.venv/lib/python3.12/site-packages/peft/tuners/tuners_utils.py:196: UserWarning: Already found a `peft_config` attribute in the model. This will lead to having multiple adapters in the model. Make sure to know what you are doing!
+  warnings.warn(
+Traceback (most recent call last):
+  File "/workspace/activation_oracles_extensions/bypass_refusal.py", line 696, in <module>
+    main(ExperimentConfig.from_env())
+  File "/workspace/activation_oracles_extensions/bypass_refusal.py", line 633, in main
+    tokenizer, model = load_model_stack(
+                       ^^^^^^^^^^^^^^^^^
+  File "/workspace/activation_oracles_extensions/model_loading_utils.py", line 71, in load_model_stack
+    load_adapters(model, adapter_specs)
+  File "/workspace/activation_oracles_extensions/model_loading_utils.py", line 46, in load_adapters
+    model.load_adapter(
+  File "/workspace/.venv/lib/python3.12/site-packages/transformers/integrations/peft.py", line 244, in load_adapter
+    inject_adapter_in_model(peft_config, self, adapter_name, **peft_load_kwargs)
+  File "/workspace/.venv/lib/python3.12/site-packages/peft/mapping.py", line 85, in inject_adapter_in_model
+    peft_model = tuner_cls(
+                 ^^^^^^^^^^
+  File "/workspace/.venv/lib/python3.12/site-packages/peft/tuners/tuners_utils.py", line 209, in __init__
+    self.inject_adapter(self.model, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage, state_dict=state_dict)
+  File "/workspace/.venv/lib/python3.12/site-packages/peft/tuners/tuners_utils.py", line 578, in inject_adapter
+    self._create_and_replace(
+  File "/workspace/.venv/lib/python3.12/site-packages/peft/tuners/lora/model.py", line 242, in _create_and_replace
+    target.update_layer(
+  File "/workspace/.venv/lib/python3.12/site-packages/peft/tuners/lora/layer.py", line 247, in update_layer
+    self.reset_lora_parameters(adapter_name, init_lora_weights)
+  File "/workspace/.venv/lib/python3.12/site-packages/peft/tuners/lora/layer.py", line 269, in reset_lora_parameters
+    nn.init.zeros_(self.lora_B[adapter_name].weight)
+  File "/workspace/.venv/lib/python3.12/site-packages/torch/nn/init.py", line 268, in zeros_
+    return _no_grad_zero_(tensor)
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/.venv/lib/python3.12/site-packages/torch/nn/init.py", line 69, in _no_grad_zero_
+    return tensor.zero_()
+           ^^^^^^^^^^^^^^
+KeyboardInterrupt

@@ -1,0 +1,41 @@
+Running bypass_refusal.py with:
+  MODEL_NAME=Qwen/Qwen3-8B
+  ORACLE_ROLLOUT_MODE=all_target_deterministic
+  NUM_ROLLOUTS=50
+  K_ROLLOUTS=10
+  NUM_ORACLE_ROLLOUTS=1
+  TARGET_PROMPT_OFFSET=0
+  TARGET_PROMPT_LIMIT=50
+  MAX_NEW_TOKENS=10000
+  ORACLE_MAX_NEW_TOKENS=1000
+  ORACLE_EVAL_BATCH_SIZE=128
+  ORACLE_JUDGE_BATCH_SIZE=64
+  TARGET_JUDGE_BATCH_SIZE=16
+  ORACLE_INPUT_TYPES=rollout_segment,token_points
+  ORACLE_TOKEN_POINT_FILTER=post_prompt
+  JUDGE_THINKING=off
+  JUDGE_INSTRUCTION_PATH=strongReject_v5.jinja2
+  ORACLE_PROMPTS_PATH=prompts/oracle_prompts/default_oracle_prompts.json
+  ORACLE_ADAPTER_PATH=adamkarvonen/checkpoints_latentqa_cls_past_lens_addition_Qwen3-8B
+  ORACLE_ADAPTER_NAME=oracle
+  EXPERIMENT_PRESET=rollout_post_prompt_oracle
+  RUN_TARGET_ROLLOUTS=true
+  RUN_TARGET_JUDGING=true
+  RUN_ORACLE_ROLLOUTS=true
+  RUN_ORACLE_JUDGING=true
+  TARGET_LORA_PATH=default
+  JUDGE_LORA_PATH=default
+  ORACLE_LORA_PATH=oracle
+  WANDB=on
+  WANDB_MODE=<unset>
+  WANDB_RUN_NAME=gpu0_full_deterministic_shard_A_default
+[wandb] WANDB_API_KEY not set; skipping logging.
+Traceback (most recent call last):
+  File "/workspace/activation_oracles_extensions/bypass_refusal.py", line 696, in <module>
+    main(ExperimentConfig.from_env())
+  File "/workspace/activation_oracles_extensions/bypass_refusal.py", line 638, in main
+    hf_token=_require_hf_token(),
+             ^^^^^^^^^^^^^^^^^^^
+  File "/workspace/activation_oracles_extensions/bypass_refusal.py", line 691, in _require_hf_token
+    raise ValueError("Please set HF_TOKEN in your <parent_dir>/.env file")
+ValueError: Please set HF_TOKEN in your <parent_dir>/.env file
