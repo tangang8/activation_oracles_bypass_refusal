@@ -35,6 +35,7 @@ class BypassRefusalPipelineTests(unittest.TestCase):
             oracle_max_new_tokens=5,
             oracle_eval_batch_size=2,
             oracle_judge_batch_size=2,
+            target_judge_batch_size=2,
             target_prompt_limit=1,
             run_target_rollouts=True,
             run_target_judging=True,
@@ -67,6 +68,7 @@ class BypassRefusalPipelineTests(unittest.TestCase):
         self.assertEqual(cfg.judge_lora_path, "default")
         self.assertEqual(cfg.oracle_lora_path, "oracle")
         self.assertEqual(cfg.oracle_adapter_path, "myorg/adapter")
+        self.assertEqual(cfg.target_judge_batch_size, 16)
 
     def test_experiment_config_uses_explicit_env_stage_values(self) -> None:
         with patch.dict(

@@ -131,7 +131,7 @@ def run_oracle_batched(
           * prompt-only mode: wrapped as [formatted_target_prompts]
           * combined mode: repeated to match len(target_responses)
       - If oracle_input_types is None:
-          * prompt-only: ["full_seq", "prompt_segment", "token_points"]
+          * prompt-only: ["full_seq", "token_points"]
           * combined:    ["full_seq", "prompt_segment", "rollout_segment", "token_points"]
       - If generation_kwargs is None:
           * oracle_repeats > 1: {"do_sample": True, "temperature": 1.0, "max_new_tokens": 128}
@@ -181,7 +181,7 @@ def run_oracle_batched(
 
     if oracle_input_types is None:
         if target_responses is None:
-            oracle_input_types = ["full_seq", "prompt_segment", "token_points"]
+            oracle_input_types = ["full_seq", "token_points"]
         else:
             oracle_input_types = ["full_seq", "prompt_segment", "rollout_segment", "token_points"]
     if generation_kwargs is None:

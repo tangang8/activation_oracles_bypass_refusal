@@ -5,11 +5,13 @@ import unittest
 try:
     from oracle_rollout_utils import (
         DEFAULT_ORACLE_ROLLOUT_MODE,
+        PROMPT_ONLY_ORACLE_INPUT_TYPES,
         oracle_rollouts_dir_base_for_mode,
         parse_oracle_rollout_mode,
     )
 except Exception:
     DEFAULT_ORACLE_ROLLOUT_MODE = None
+    PROMPT_ONLY_ORACLE_INPUT_TYPES = None
     oracle_rollouts_dir_base_for_mode = None
     parse_oracle_rollout_mode = None
 
@@ -28,6 +30,9 @@ class OracleRolloutUtilsModeTests(unittest.TestCase):
         self.assertEqual(oracle_rollouts_dir_base_for_mode("all_target_deterministic"), "oracle_rollouts")
         self.assertEqual(oracle_rollouts_dir_base_for_mode("sampled_target_repeats"), "oracle_rollouts")
         self.assertEqual(oracle_rollouts_dir_base_for_mode("prompt_only_repeats"), "oracle_prompt_rollouts")
+
+    def test_prompt_only_default_probes_skip_prompt_segment(self) -> None:
+        self.assertEqual(PROMPT_ONLY_ORACLE_INPUT_TYPES, ["full_seq", "token_points"])
 
 
 if __name__ == "__main__":

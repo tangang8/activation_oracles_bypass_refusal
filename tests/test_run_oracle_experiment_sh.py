@@ -30,6 +30,7 @@ class RunScriptTests(unittest.TestCase):
                 "echo \"JUDGE_LORA_PATH=${JUDGE_LORA_PATH:-}\"\n"
                 "echo \"ORACLE_LORA_PATH=${ORACLE_LORA_PATH:-}\"\n"
                 "echo \"JUDGE_THINKING=${JUDGE_THINKING:-}\"\n"
+                "echo \"TARGET_JUDGE_BATCH_SIZE=${TARGET_JUDGE_BATCH_SIZE:-}\"\n"
                 "echo \"ORACLE_ADAPTER_PATH=${ORACLE_ADAPTER_PATH:-}\"\n"
                 "echo \"ORACLE_ADAPTER_NAME=${ORACLE_ADAPTER_NAME:-}\"\n"
                 "echo \"ORACLE_PROMPTS_PATH=${ORACLE_PROMPTS_PATH:-}\"\n"
@@ -49,6 +50,7 @@ class RunScriptTests(unittest.TestCase):
         self.assertIn("--preset NAME", proc.stdout)
         self.assertIn("--oracle-adapter-path PATH", proc.stdout)
         self.assertIn("--oracle-adapter-name NAME", proc.stdout)
+        self.assertIn("--target-judge-batch-size N", proc.stdout)
         self.assertIn("--wandb on|off", proc.stdout)
         self.assertIn("full_deterministic_oracle", proc.stdout)
         self.assertIn("sampled_target_repeats", proc.stdout)
@@ -102,7 +104,7 @@ class RunScriptTests(unittest.TestCase):
         self.assertIn("RUN_ORACLE_ROLLOUTS=false", proc.stdout)
         self.assertIn("RUN_ORACLE_JUDGING=false", proc.stdout)
         self.assertIn("ORACLE_PROMPTS_PATH=prompts/oracle_prompts/default_oracle_prompts.json", proc.stdout)
-        self.assertIn("JUDGE_INSTRUCTION_PATH=user_request_fulfillment.jinja2", proc.stdout)
+        self.assertIn("JUDGE_INSTRUCTION_PATH=strongReject_v5.jinja2", proc.stdout)
 
     def test_preset_prompt_only_oracle_exports_expected_flags(self) -> None:
         proc = self._run_with_fake_python("--preset", "prompt_only_oracle")
@@ -113,6 +115,7 @@ class RunScriptTests(unittest.TestCase):
         self.assertIn("RUN_ORACLE_ROLLOUTS=true", proc.stdout)
         self.assertIn("RUN_ORACLE_JUDGING=true", proc.stdout)
         self.assertIn("JUDGE_THINKING=off", proc.stdout)
+        self.assertIn("TARGET_JUDGE_BATCH_SIZE=16", proc.stdout)
 
     def test_preset_sampled_target_repeats_sets_sampled_mode(self) -> None:
         proc = self._run_with_fake_python("--preset", "sampled_target_repeats")

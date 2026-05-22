@@ -179,11 +179,14 @@ class OracleModeRoutingTests(unittest.TestCase):
         self.assertEqual(len(entries), 2)
         self.assertEqual(entries[0]["oracle_rollout_index"], 0)
         self.assertEqual(entries[1]["oracle_rollout_index"], 1)
+        self.assertIn("full_seq", entries[0]["oracle_response"])
+        self.assertNotIn("prompt_segment", entries[0]["oracle_response"])
         cache_path_mock.assert_called_once()
         run_oracle_kwargs = run_oracle_mock.call_args.kwargs
         self.assertEqual(run_oracle_kwargs["generation_kwargs"]["temperature"], 1.0)
         self.assertTrue(run_oracle_kwargs["generation_kwargs"]["do_sample"])
         self.assertEqual(run_oracle_kwargs["oracle_input_source_type"], "prompt_only")
+        self.assertEqual(run_oracle_kwargs["oracle_input_types"], ["full_seq", "token_points"])
 
     def test_prompt_only_cache_with_rollout_index_only_raises(self) -> None:
         model = SimpleNamespace(config=SimpleNamespace(_name_or_path="Qwen/Qwen3-8B"))

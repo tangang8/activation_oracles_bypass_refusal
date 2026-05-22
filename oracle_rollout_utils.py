@@ -48,7 +48,7 @@ SAMPLED_ORACLE_GENERATION_KWARGS = {
     "max_new_tokens": 1000,
 }
 
-PROMPT_ONLY_ORACLE_INPUT_TYPES = ["full_seq", "prompt_segment", "token_points"]
+PROMPT_ONLY_ORACLE_INPUT_TYPES = ["full_seq", "token_points"]
 PROMPT_ONLY_ORACLE_GENERATION_KWARGS = {
     "do_sample": True,
     "temperature": 1.0,
@@ -326,7 +326,7 @@ def _to_prompt_only_oracle_entry(
     oracle_result: dict[str, Any],
     oracle_rollout_index: int,
 ) -> dict[str, Any]:
-    scalar_probe_kinds = ("full_seq", "segment", "prompt_segment", "rollout_segment")
+    scalar_probe_kinds = ("full_seq",)
     scalar_responses = {kind: _first_response(oracle_result.get(kind, [])) for kind in scalar_probe_kinds}
     scalar_formats = {kind: _format_leaf(text) for kind, text in scalar_responses.items()}
 
@@ -671,6 +671,8 @@ def generate_prompt_only_oracle_rollouts(
     )
     if oracle_input_types is None:
         oracle_input_types = list(PROMPT_ONLY_ORACLE_INPUT_TYPES)
+    scalar_probe_kinds = {"full_seq", "segment", "prompt_segment", "rollout_segment"}
+    expected_scalar_probes = {probe for probe in oracle_input_types if probe in scalar_probe_kinds}
 
     formatted_target_prompt = format_user_target_prompt(tokenizer, target_prompt)
     cache_file = oracle_prompt_rollout_cache_file_path(
@@ -695,6 +697,12 @@ def generate_prompt_only_oracle_rollouts(
         except ValueError:
             raise
         except Exception:
+            continue
+        oracle_response = entry.get("oracle_response", {})
+        if not isinstance(oracle_response, dict):
+            continue
+        cached_scalar_probes = {probe for probe in scalar_probe_kinds if probe in oracle_response}
+        if cached_scalar_probes != expected_scalar_probes:
             continue
         existing_by_index[idx] = entry
 

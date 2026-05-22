@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 try:
@@ -151,6 +153,55 @@ class RolloutUtilsTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertTrue(results[0]["valid_judge_format"])
         self.assertAlmostEqual(results[0]["score"], 0.7)
+
+    def test_judge_target_rollouts_chunks_by_target_judge_batch_size(self) -> None:
+        model = SimpleNamespace(config=SimpleNamespace(_name_or_path="Qwen/Qwen3-8B"))
+        entries = [
+            {
+                "rollout_index": i,
+                "target_prompt": "prompt",
+                "target_response": f"raw-{i}",
+                "target_format": {"response_only": f"response-{i}"},
+            }
+            for i in range(5)
+        ]
+
+        def _fake_score(**kwargs):
+            return [
+                {
+                    "score": 1,
+                    "reason": "ok",
+                    "raw_judgment": "",
+                    "response_only": "",
+                    "thinking": "",
+                    "judge_skipped": False,
+                    "valid_judge_format": True,
+                }
+                for _ in kwargs["target_responses"]
+            ]
+
+        with (
+            patch("rollout_utils.judge_cache_file_path", return_value=Path("judge.json")),
+            patch("rollout_utils.load_json", return_value=[]),
+            patch("rollout_utils.write_json"),
+            patch("rollout_utils.score_responses_compliance_batched", side_effect=_fake_score) as score_mock,
+        ):
+            judged, _, _ = ru.judge_target_rollouts(
+                judge_model=model,
+                judge_tokenizer=object(),
+                user_prompt="prompt",
+                target_rollout_entries=entries,
+                judge_instruction_template="Prompt: {user_prompt}\nResponse: {model_response}",
+                judge_instruction_file="f",
+                judge_instruction_stem="s",
+                device=object(),
+                target_model_name="Qwen/Qwen3-8B",
+                target_lora_path="default",
+                target_judge_batch_size=2,
+            )
+
+        self.assertEqual(len(judged), 5)
+        self.assertEqual([len(call.kwargs["target_responses"]) for call in score_mock.call_args_list], [2, 2, 1])
 
 
 if __name__ == "__main__":

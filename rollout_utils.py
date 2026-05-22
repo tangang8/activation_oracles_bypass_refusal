@@ -865,11 +865,14 @@ def judge_target_rollouts(
     cache_root: str = "cache",
     judge_generation_kwargs: dict[str, Any] | None = None,
     judge_thinking_mode: str = "default",
+    target_judge_batch_size: int = 16,
     dist_ctx: DistributedContext | None = None,
     perf: PerfLogger | None = None,
 ) -> tuple[list[dict[str, Any]], Path, dict[str, Any]]:
     if judge_generation_kwargs is None:
         judge_generation_kwargs = {"do_sample": False, "temperature": 0.0, "max_new_tokens": 1000}
+    if target_judge_batch_size <= 0:
+        raise ValueError(f"target_judge_batch_size must be > 0, got {target_judge_batch_size}")
 
     judge_thinking_tag = THINKING_TAG_PATTERNS_BY_MODEL.get(judge_model.config._name_or_path)
     judge_enable_thinking = resolve_judge_enable_thinking(judge_thinking_mode)
@@ -958,6 +961,7 @@ def judge_target_rollouts(
                 "rollout/judge_generate",
                 {
                     "batch_size": len(batch_responses),
+                    "target_judge_batch_size": target_judge_batch_size,
                     "judge_max_new_tokens": judge_generation_kwargs.get("max_new_tokens"),
                     "rank": rank,
                     "world_size": world_size,
@@ -967,24 +971,30 @@ def judge_target_rollouts(
             else nullcontext()
         ) as judge_metrics:
             judge_t0 = perf_counter()
-            parsed_judgments = score_responses_compliance_batched(
-                judge_model=judge_model,
-                judge_tokenizer=judge_tokenizer,
-                user_prompt=user_prompt,
-                target_responses=batch_responses,
-                judge_instruction_template=judge_instruction_template,
-                device=device,
-                judge_lora_path=judge_lora_path,
-                generation_kwargs=judge_generation_kwargs,
-                target_thinking_tag=None,
-                judge_thinking_tag=judge_thinking_tag,
-                judge_enable_thinking=judge_enable_thinking,
-                emit_summary_log=False,
-                stage_label="target judging",
-                item_ids=[f"rollout_index={int(entry['rollout_index'])}" for entry in batch_rollouts],
-                malformed_retry_attempts=4,
-                judge_scoring_mode=judge_scoring_mode,
-            )
+            parsed_judgments = []
+            for offset in range(0, len(batch_responses), target_judge_batch_size):
+                chunk_responses = batch_responses[offset : offset + target_judge_batch_size]
+                chunk_rollouts = batch_rollouts[offset : offset + target_judge_batch_size]
+                parsed_judgments.extend(
+                    score_responses_compliance_batched(
+                        judge_model=judge_model,
+                        judge_tokenizer=judge_tokenizer,
+                        user_prompt=user_prompt,
+                        target_responses=chunk_responses,
+                        judge_instruction_template=judge_instruction_template,
+                        device=device,
+                        judge_lora_path=judge_lora_path,
+                        generation_kwargs=judge_generation_kwargs,
+                        target_thinking_tag=None,
+                        judge_thinking_tag=judge_thinking_tag,
+                        judge_enable_thinking=judge_enable_thinking,
+                        emit_summary_log=False,
+                        stage_label="target judging",
+                        item_ids=[f"rollout_index={int(entry['rollout_index'])}" for entry in chunk_rollouts],
+                        malformed_retry_attempts=4,
+                        judge_scoring_mode=judge_scoring_mode,
+                    )
+                )
             if perf:
                 elapsed = max(perf_counter() - judge_t0, 1e-12)
                 judge_metrics["throughput/judgments_per_second"] = float(len(parsed_judgments)) / elapsed

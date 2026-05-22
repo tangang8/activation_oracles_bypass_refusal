@@ -71,6 +71,7 @@ max_new_tokens=10000                         # MAX_NEW_TOKENS: generation cap fo
 oracle_max_new_tokens=1000                   # ORACLE_MAX_NEW_TOKENS: generation cap for oracle rollout stage.
 oracle_eval_batch_size=32                    # ORACLE_EVAL_BATCH_SIZE: batch size for oracle rollout generation.
 oracle_judge_batch_size=16                    # ORACLE_JUDGE_BATCH_SIZE: batch size for oracle judging stage.
+target_judge_batch_size=16                   # TARGET_JUDGE_BATCH_SIZE: batch size for target judging stage.
 judge_thinking="off"                         # JUDGE_THINKING: default | off
 judge_instruction_path="strongReject_v5.jinja2"  # JUDGE_INSTRUCTION_PATH: judge prompt template file.
 oracle_prompts_path="prompts/oracle_prompts/default_oracle_prompts.json"  # ORACLE_PROMPTS_PATH: oracle prompt list file.
@@ -113,6 +114,7 @@ Options:
   --oracle-max-new-tokens N      ORACLE_MAX_NEW_TOKENS
   --oracle-eval-batch-size N     ORACLE_EVAL_BATCH_SIZE
   --oracle-judge-batch-size N    ORACLE_JUDGE_BATCH_SIZE
+  --target-judge-batch-size N    TARGET_JUDGE_BATCH_SIZE
   --judge-instruction-path PATH  JUDGE_INSTRUCTION_PATH
   --oracle-prompts-path PATH     ORACLE_PROMPTS_PATH
   --oracle-adapter-path PATH     ORACLE_ADAPTER_PATH (LoRA checkpoint/path to load)
@@ -173,6 +175,7 @@ MAX_NEW_TOKENS_FROM_ENV="${MAX_NEW_TOKENS+x}"
 ORACLE_MAX_NEW_TOKENS_FROM_ENV="${ORACLE_MAX_NEW_TOKENS+x}"
 ORACLE_EVAL_BATCH_SIZE_FROM_ENV="${ORACLE_EVAL_BATCH_SIZE+x}"
 ORACLE_JUDGE_BATCH_SIZE_FROM_ENV="${ORACLE_JUDGE_BATCH_SIZE+x}"
+TARGET_JUDGE_BATCH_SIZE_FROM_ENV="${TARGET_JUDGE_BATCH_SIZE+x}"
 JUDGE_THINKING_FROM_ENV="${JUDGE_THINKING+x}"
 JUDGE_INSTRUCTION_PATH_FROM_ENV="${JUDGE_INSTRUCTION_PATH+x}"
 ORACLE_PROMPTS_PATH_FROM_ENV="${ORACLE_PROMPTS_PATH+x}"
@@ -197,6 +200,7 @@ MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-$max_new_tokens}"
 ORACLE_MAX_NEW_TOKENS="${ORACLE_MAX_NEW_TOKENS:-$oracle_max_new_tokens}"
 ORACLE_EVAL_BATCH_SIZE="${ORACLE_EVAL_BATCH_SIZE:-$oracle_eval_batch_size}"
 ORACLE_JUDGE_BATCH_SIZE="${ORACLE_JUDGE_BATCH_SIZE:-$oracle_judge_batch_size}"
+TARGET_JUDGE_BATCH_SIZE="${TARGET_JUDGE_BATCH_SIZE:-$target_judge_batch_size}"
 JUDGE_THINKING="${JUDGE_THINKING:-$judge_thinking}"
 JUDGE_INSTRUCTION_PATH="${JUDGE_INSTRUCTION_PATH:-$judge_instruction_path}"
 ORACLE_PROMPTS_PATH="${ORACLE_PROMPTS_PATH:-$oracle_prompts_path}"
@@ -239,6 +243,7 @@ while [[ $# -gt 0 ]]; do
     --oracle-max-new-tokens) ORACLE_MAX_NEW_TOKENS="$2"; shift 2 ;;
     --oracle-eval-batch-size) ORACLE_EVAL_BATCH_SIZE="$2"; shift 2 ;;
     --oracle-judge-batch-size) ORACLE_JUDGE_BATCH_SIZE="$2"; shift 2 ;;
+    --target-judge-batch-size) TARGET_JUDGE_BATCH_SIZE="$2"; shift 2 ;;
     --judge-thinking) JUDGE_THINKING="$2"; shift 2 ;;
     --judge-instruction-path) JUDGE_INSTRUCTION_PATH="$2"; shift 2 ;;
     --oracle-prompts-path) ORACLE_PROMPTS_PATH="$2"; shift 2 ;;
@@ -451,6 +456,7 @@ export MAX_NEW_TOKENS="$MAX_NEW_TOKENS"
 export ORACLE_MAX_NEW_TOKENS="$ORACLE_MAX_NEW_TOKENS"
 export ORACLE_EVAL_BATCH_SIZE="$ORACLE_EVAL_BATCH_SIZE"
 export ORACLE_JUDGE_BATCH_SIZE="$ORACLE_JUDGE_BATCH_SIZE"
+export TARGET_JUDGE_BATCH_SIZE="$TARGET_JUDGE_BATCH_SIZE"
 export JUDGE_THINKING="$JUDGE_THINKING"
 export JUDGE_INSTRUCTION_PATH="$JUDGE_INSTRUCTION_PATH"
 export ORACLE_ADAPTER_PATH="$ORACLE_ADAPTER_PATH"
@@ -490,6 +496,7 @@ Running bypass_refusal.py with:
   ORACLE_MAX_NEW_TOKENS=$ORACLE_MAX_NEW_TOKENS
   ORACLE_EVAL_BATCH_SIZE=$ORACLE_EVAL_BATCH_SIZE
   ORACLE_JUDGE_BATCH_SIZE=$ORACLE_JUDGE_BATCH_SIZE
+  TARGET_JUDGE_BATCH_SIZE=$TARGET_JUDGE_BATCH_SIZE
   JUDGE_THINKING=$JUDGE_THINKING
   JUDGE_INSTRUCTION_PATH=$JUDGE_INSTRUCTION_PATH
   ORACLE_PROMPTS_PATH=${ORACLE_PROMPTS_PATH:-<default>}

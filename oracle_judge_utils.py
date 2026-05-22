@@ -39,6 +39,8 @@ def _flatten_oracle_responses(entry: dict[str, Any]) -> list[dict[str, Any]]:
     flattened: list[dict[str, Any]] = []
 
     for probe_kind in ("full_seq", "segment", "prompt_segment", "rollout_segment"):
+        if not isinstance(oracle_response, dict) or probe_kind not in oracle_response:
+            continue
         leaf_format = oracle_format.get(probe_kind, {}) if isinstance(oracle_format, dict) else {}
         if isinstance(leaf_format, dict):
             response_text = str(leaf_format.get("response_only", "")).strip()

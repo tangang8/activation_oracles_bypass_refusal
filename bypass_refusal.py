@@ -54,6 +54,7 @@ class ExperimentConfig:
     oracle_max_new_tokens: int
     oracle_eval_batch_size: int
     oracle_judge_batch_size: int
+    target_judge_batch_size: int
     target_prompt_limit: int
     run_target_rollouts: bool
     run_target_judging: bool
@@ -133,6 +134,7 @@ class ExperimentConfig:
             oracle_max_new_tokens=_env_int("ORACLE_MAX_NEW_TOKENS", 1000),
             oracle_eval_batch_size=_env_int("ORACLE_EVAL_BATCH_SIZE", 32),
             oracle_judge_batch_size=_env_int("ORACLE_JUDGE_BATCH_SIZE", 8),
+            target_judge_batch_size=_env_int("TARGET_JUDGE_BATCH_SIZE", 16),
             target_prompt_limit=_env_int("TARGET_PROMPT_LIMIT", 100),
             run_target_rollouts=run_target_rollouts,
             run_target_judging=run_target_judging,
@@ -297,6 +299,7 @@ def run_pipeline_for_target_prompt(
                     target_lora_path=cfg.target_lora_path,
                     judge_lora_path=cfg.judge_lora_path,
                     judge_thinking_mode=cfg.judge_thinking_mode,
+                    target_judge_batch_size=cfg.target_judge_batch_size,
                     cache_root="cache",
                     dist_ctx=ctx,
                     perf=perf,
@@ -560,6 +563,7 @@ def main(cfg: ExperimentConfig) -> None:
                 "oracle_max_new_tokens": cfg.oracle_max_new_tokens,
                 "oracle_eval_batch_size": cfg.oracle_eval_batch_size,
                 "oracle_judge_batch_size": cfg.oracle_judge_batch_size,
+                "target_judge_batch_size": cfg.target_judge_batch_size,
                 "judge_thinking_mode": cfg.judge_thinking_mode,
                 "judge_instruction_file": cfg.judge_instruction_path,
                 "target_prompt_limit": cfg.target_prompt_limit,
