@@ -76,7 +76,7 @@ judge_thinking="off"                         # JUDGE_THINKING: default | off
 judge_instruction_path="strongReject_v5.jinja2"  # JUDGE_INSTRUCTION_PATH: judge prompt template file.
 oracle_prompts_path="prompts/oracle_prompts/default_oracle_prompts.json"  # ORACLE_PROMPTS_PATH: oracle prompt list file.
 wandb_run_name=""                            # WANDB_RUN_NAME: optional run display name.
-wandb="off"                                  # WANDB_SETTING: on | off
+wandb="on"                                  # WANDB_SETTING: on | off
 oracle_adapter_path="${model_mapping%%|*}"   # ORACLE_ADAPTER_PATH: adapter checkpoint/path to load.
 oracle_adapter_name="${model_mapping##*|}"   # ORACLE_ADAPTER_NAME: adapter name used with set_adapter.
 

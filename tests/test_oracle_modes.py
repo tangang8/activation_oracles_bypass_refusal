@@ -172,7 +172,7 @@ class OracleModeRoutingTests(unittest.TestCase):
                 target_model_name="Qwen/Qwen3-8B",
                 target_lora_path="default",
                 num_oracle_rollouts=2,
-                oracle_generation_kwargs={"temperature": 0.25},
+                oracle_generation_kwargs={"temperature": 0.25, "max_new_tokens": 777},
             )
 
         self.assertEqual(cache_file, Path("cache/prompt.json"))
@@ -184,6 +184,7 @@ class OracleModeRoutingTests(unittest.TestCase):
         cache_path_mock.assert_called_once()
         run_oracle_kwargs = run_oracle_mock.call_args.kwargs
         self.assertEqual(run_oracle_kwargs["generation_kwargs"]["temperature"], 1.0)
+        self.assertEqual(run_oracle_kwargs["generation_kwargs"]["max_new_tokens"], 777)
         self.assertTrue(run_oracle_kwargs["generation_kwargs"]["do_sample"])
         self.assertEqual(run_oracle_kwargs["oracle_input_source_type"], "prompt_only")
         self.assertEqual(run_oracle_kwargs["oracle_input_types"], ["full_seq", "token_points"])

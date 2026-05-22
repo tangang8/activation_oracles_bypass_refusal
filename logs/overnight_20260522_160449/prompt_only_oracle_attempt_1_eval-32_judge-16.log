@@ -1,0 +1,29 @@
+Running bypass_refusal.py with:
+  MODEL_NAME=Qwen/Qwen3-8B
+  ORACLE_ROLLOUT_MODE=prompt_only_repeats
+  NUM_ROLLOUTS=50
+  K_ROLLOUTS=10
+  NUM_ORACLE_ROLLOUTS=50
+  TARGET_PROMPT_LIMIT=100
+  MAX_NEW_TOKENS=10000
+  ORACLE_MAX_NEW_TOKENS=1000
+  ORACLE_EVAL_BATCH_SIZE=32
+  ORACLE_JUDGE_BATCH_SIZE=16
+  TARGET_JUDGE_BATCH_SIZE=16
+  JUDGE_THINKING=off
+  JUDGE_INSTRUCTION_PATH=strongReject_v5.jinja2
+  ORACLE_PROMPTS_PATH=prompts/oracle_prompts/default_oracle_prompts.json
+  ORACLE_ADAPTER_PATH=adamkarvonen/checkpoints_latentqa_cls_past_lens_addition_Qwen3-8B
+  ORACLE_ADAPTER_NAME=oracle
+  EXPERIMENT_PRESET=prompt_only_oracle
+  RUN_TARGET_ROLLOUTS=false
+  RUN_TARGET_JUDGING=false
+  RUN_ORACLE_ROLLOUTS=true
+  RUN_ORACLE_JUDGING=true
+  TARGET_LORA_PATH=default
+  JUDGE_LORA_PATH=default
+  ORACLE_LORA_PATH=oracle
+  WANDB=on
+  WANDB_MODE=<unset>
+  WANDB_RUN_NAME=<unset>
+./run_oracle_experiment.sh: line 518: python: command not found

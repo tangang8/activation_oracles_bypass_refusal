@@ -134,8 +134,8 @@ def run_oracle_batched(
           * prompt-only: ["full_seq", "token_points"]
           * combined:    ["full_seq", "prompt_segment", "rollout_segment", "token_points"]
       - If generation_kwargs is None:
-          * oracle_repeats > 1: {"do_sample": True, "temperature": 1.0, "max_new_tokens": 128}
-          * oracle_repeats == 1: {"do_sample": False, "temperature": 0.0, "max_new_tokens": 128}
+          * oracle_repeats > 1: {"do_sample": True, "temperature": 1.0, "max_new_tokens": 1000}
+          * oracle_repeats == 1: {"do_sample": False, "temperature": 0.0, "max_new_tokens": 1000}
       - If token_point_indices_by_target is None:
           * uses extractor-derived defaults per target from combined_specs
           * prompt-only targets use per-model prompt token-point extractors
@@ -186,9 +186,9 @@ def run_oracle_batched(
             oracle_input_types = ["full_seq", "prompt_segment", "rollout_segment", "token_points"]
     if generation_kwargs is None:
         if oracle_repeats > 1:
-            generation_kwargs = {"do_sample": True, "temperature": 1.0, "max_new_tokens": 128}
+            generation_kwargs = {"do_sample": True, "temperature": 1.0, "max_new_tokens": 1000}
         else:
-            generation_kwargs = {"do_sample": False, "temperature": 0.0, "max_new_tokens": 128}
+            generation_kwargs = {"do_sample": False, "temperature": 0.0, "max_new_tokens": 1000}
     inferred_source_type, source_index_label = _oracle_input_source(target_responses)
     source_type = oracle_input_source_type or inferred_source_type
     if source_type not in {"prompt_only", "target_rollout"}:
