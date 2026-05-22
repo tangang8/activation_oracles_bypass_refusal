@@ -344,9 +344,14 @@ def _to_prompt_only_oracle_entry(
     formatted_target_prompt: str,
     oracle_result: dict[str, Any],
     oracle_rollout_index: int,
+    requested_scalar_probes: set[str],
 ) -> dict[str, Any]:
     scalar_probe_kinds = ("full_seq", "segment", "prompt_segment")
-    scalar_responses = {kind: _first_response(oracle_result.get(kind, [])) for kind in scalar_probe_kinds}
+    scalar_responses = {
+        kind: _first_response(oracle_result.get(kind, []))
+        for kind in scalar_probe_kinds
+        if kind in requested_scalar_probes
+    }
     scalar_formats = {kind: _format_leaf(text) for kind, text in scalar_responses.items()}
 
     tokens_raw = oracle_result.get("tokens", {})
@@ -783,6 +788,7 @@ def generate_prompt_only_oracle_rollouts(
             formatted_target_prompt=formatted_target_prompt,
             oracle_result=_oracle_result_for_repeat(combined_result, oracle_rollout_index),
             oracle_rollout_index=oracle_rollout_index,
+            requested_scalar_probes=expected_scalar_probes,
         )
         for oracle_rollout_index in range(num_oracle_rollouts)
     ]
