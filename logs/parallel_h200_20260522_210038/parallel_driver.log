@@ -1,0 +1,60 @@
+[2026-05-22 21:00:38] Parallel H200 run starting. run_label=parallel_h200_20260522_210038 logs=logs/parallel_h200_20260522_210038
+[2026-05-22 21:00:38] Parallel H200 run starting. run_label=parallel_h200_20260522_210038 logs=logs/parallel_h200_20260522_210038
+[2026-05-22 21:00:38] Parallel H200 run starting. run_label=parallel_h200_20260522_210038 logs=logs/parallel_h200_20260522_210038
+[2026-05-22 21:00:38] GPU pool: 0 1
+[2026-05-22 21:00:38] GPU pool: 0
+[2026-05-22 21:00:38] GPU pool: 0 1 2 3
+[2026-05-22 21:00:38] Target shard A offset=0 limit=1
+[2026-05-22 21:00:38] Target shard A offset=0 limit=1
+[2026-05-22 21:00:38] Target shard A offset=0 limit=50
+[2026-05-22 21:00:38] Target shard B offset=1 limit=1
+[2026-05-22 21:00:38] Target shard B offset=1 limit=1
+[2026-05-22 21:00:38] Target shard B offset=50 limit=50
+[2026-05-22 21:00:38] Full deterministic oracle preset: rollout_post_prompt_oracle
+[2026-05-22 21:00:38] Full deterministic oracle preset: rollout_post_prompt_oracle
+[2026-05-22 21:00:38] Full deterministic oracle preset: rollout_post_prompt_oracle
+[2026-05-22 21:00:38] Oracle prompt paths: prompts/oracle_prompts/default_oracle_prompts.json,prompts/oracle_prompts/model_answer_min_200_words.json
+[2026-05-22 21:00:38] Oracle prompt paths: prompts/oracle_prompts/default_oracle_prompts.json,prompts/oracle_prompts/model_answer_min_200_words.json
+[2026-05-22 21:00:38] Oracle prompt paths: prompts/oracle_prompts/default_oracle_prompts.json,prompts/oracle_prompts/model_answer_min_200_words.json
+[2026-05-22 21:00:38] Job table:
+[2026-05-22 21:00:38] Job table:
+[2026-05-22 21:00:38] Job table:
+[2026-05-22 21:00:38]   job=target_shard_A type=target preset=target_judging_only offset=0 limit=1 oracle_prompts_path=none depends_on=none ladder=target_judge
+[2026-05-22 21:00:38]   job=target_shard_A type=target preset=target_judging_only offset=0 limit=1 oracle_prompts_path=none depends_on=none ladder=target_judge
+[2026-05-22 21:00:38]   job=target_shard_A type=target preset=target_judging_only offset=0 limit=50 oracle_prompts_path=none depends_on=none ladder=target_judge
+[2026-05-22 21:00:38]   job=target_shard_B type=target preset=target_judging_only offset=1 limit=1 oracle_prompts_path=none depends_on=none ladder=target_judge
+[2026-05-22 21:00:38]   job=target_shard_B type=target preset=target_judging_only offset=50 limit=50 oracle_prompts_path=none depends_on=none ladder=target_judge
+[2026-05-22 21:00:38]   job=target_shard_B type=target preset=target_judging_only offset=1 limit=1 oracle_prompts_path=none depends_on=none ladder=target_judge
+[2026-05-22 21:00:38]   job=prompt_only_prompt_0 type=prompt_only preset=prompt_only_oracle offset=0 limit=100 oracle_prompts_path=prompts/oracle_prompts/default_oracle_prompts.json depends_on=none ladder=oracle_eval_judge
+[2026-05-22 21:00:38]   job=prompt_only_prompt_0 type=prompt_only preset=prompt_only_oracle offset=0 limit=2 oracle_prompts_path=prompts/oracle_prompts/default_oracle_prompts.json depends_on=none ladder=oracle_eval_judge
+[2026-05-22 21:00:38]   job=prompt_only_prompt_0 type=prompt_only preset=prompt_only_oracle offset=0 limit=2 oracle_prompts_path=prompts/oracle_prompts/default_oracle_prompts.json depends_on=none ladder=oracle_eval_judge
+[2026-05-22 21:00:38]   job=oracle_target_control type=target_control preset=oracle_target_control offset=0 limit=100 oracle_prompts_path=none depends_on=none ladder=target_judge
+[2026-05-22 21:00:38]   job=oracle_target_control type=target_control preset=oracle_target_control offset=0 limit=2 oracle_prompts_path=none depends_on=none ladder=target_judge
+[2026-05-22 21:00:38]   job=oracle_target_control type=target_control preset=oracle_target_control offset=0 limit=2 oracle_prompts_path=none depends_on=none ladder=target_judge
+[2026-05-22 21:00:38]   job=prompt_only_prompt_1 type=prompt_only preset=prompt_only_oracle offset=0 limit=2 oracle_prompts_path=prompts/oracle_prompts/model_answer_min_200_words.json depends_on=none ladder=oracle_eval_judge
+[2026-05-22 21:00:38]   job=prompt_only_prompt_1 type=prompt_only preset=prompt_only_oracle offset=0 limit=2 oracle_prompts_path=prompts/oracle_prompts/model_answer_min_200_words.json depends_on=none ladder=oracle_eval_judge
+[2026-05-22 21:00:38]   job=prompt_only_prompt_1 type=prompt_only preset=prompt_only_oracle offset=0 limit=100 oracle_prompts_path=prompts/oracle_prompts/model_answer_min_200_words.json depends_on=none ladder=oracle_eval_judge
+[2026-05-22 21:00:38]   job=deterministic_shard_A_prompt_0 type=deterministic preset=rollout_post_prompt_oracle offset=0 limit=1 oracle_prompts_path=prompts/oracle_prompts/default_oracle_prompts.json depends_on=target_shard_A ladder=oracle_eval_judge
+[2026-05-22 21:00:38]   job=deterministic_shard_A_prompt_0 type=deterministic preset=rollout_post_prompt_oracle offset=0 limit=50 oracle_prompts_path=prompts/oracle_prompts/default_oracle_prompts.json depends_on=target_shard_A ladder=oracle_eval_judge
+[2026-05-22 21:00:38]   job=deterministic_shard_A_prompt_0 type=deterministic preset=rollout_post_prompt_oracle offset=0 limit=1 oracle_prompts_path=prompts/oracle_prompts/default_oracle_prompts.json depends_on=target_shard_A ladder=oracle_eval_judge
+[2026-05-22 21:00:38]   job=deterministic_shard_B_prompt_0 type=deterministic preset=rollout_post_prompt_oracle offset=50 limit=50 oracle_prompts_path=prompts/oracle_prompts/default_oracle_prompts.json depends_on=target_shard_B ladder=oracle_eval_judge
+[2026-05-22 21:00:38]   job=deterministic_shard_B_prompt_0 type=deterministic preset=rollout_post_prompt_oracle offset=1 limit=1 oracle_prompts_path=prompts/oracle_prompts/default_oracle_prompts.json depends_on=target_shard_B ladder=oracle_eval_judge
+[2026-05-22 21:00:38]   job=deterministic_shard_B_prompt_0 type=deterministic preset=rollout_post_prompt_oracle offset=1 limit=1 oracle_prompts_path=prompts/oracle_prompts/default_oracle_prompts.json depends_on=target_shard_B ladder=oracle_eval_judge
+[2026-05-22 21:00:38]   job=deterministic_shard_A_prompt_1 type=deterministic preset=rollout_post_prompt_oracle offset=0 limit=1 oracle_prompts_path=prompts/oracle_prompts/model_answer_min_200_words.json depends_on=target_shard_A ladder=oracle_eval_judge
+[2026-05-22 21:00:38]   job=deterministic_shard_A_prompt_1 type=deterministic preset=rollout_post_prompt_oracle offset=0 limit=1 oracle_prompts_path=prompts/oracle_prompts/model_answer_min_200_words.json depends_on=target_shard_A ladder=oracle_eval_judge
+[2026-05-22 21:00:38]   job=deterministic_shard_A_prompt_1 type=deterministic preset=rollout_post_prompt_oracle offset=0 limit=50 oracle_prompts_path=prompts/oracle_prompts/model_answer_min_200_words.json depends_on=target_shard_A ladder=oracle_eval_judge
+[2026-05-22 21:00:38]   job=deterministic_shard_B_prompt_1 type=deterministic preset=rollout_post_prompt_oracle offset=1 limit=1 oracle_prompts_path=prompts/oracle_prompts/model_answer_min_200_words.json depends_on=target_shard_B ladder=oracle_eval_judge
+[2026-05-22 21:00:38]   job=deterministic_shard_B_prompt_1 type=deterministic preset=rollout_post_prompt_oracle offset=1 limit=1 oracle_prompts_path=prompts/oracle_prompts/model_answer_min_200_words.json depends_on=target_shard_B ladder=oracle_eval_judge
+[2026-05-22 21:00:38]   job=deterministic_shard_B_prompt_1 type=deterministic preset=rollout_post_prompt_oracle offset=50 limit=50 oracle_prompts_path=prompts/oracle_prompts/model_answer_min_200_words.json depends_on=target_shard_B ladder=oracle_eval_judge
+[2026-05-22 21:00:38] Launching job=target_shard_A gpu=0 type=target depends_on=none
+[2026-05-22 21:00:38] Launching job=target_shard_A gpu=0 type=target depends_on=none
+[2026-05-22 21:00:38] Launching job=target_shard_A gpu=0 type=target depends_on=none
+[2026-05-22 21:00:38] Launching job=target_shard_B gpu=1 type=target depends_on=none
+[2026-05-22 21:00:38] Launching job=target_shard_B gpu=1 type=target depends_on=none
+[2026-05-22 21:00:38] Job failed: target_shard_A gpu=0 status=1
+[2026-05-22 21:00:38] Launching job=prompt_only_prompt_0 gpu=2 type=prompt_only depends_on=none
+[2026-05-22 21:00:38] Job failed: target_shard_A gpu=0 status=1
+[2026-05-22 21:00:38] DRY_RUN GPU 2: CUDA_VISIBLE_DEVICES=2 ./run_oracle_experiment.sh --preset prompt_only_oracle --target-prompt-offset 0 --target-prompt-limit 100 --num-oracle-rollouts 50 --oracle-prompts-path prompts/oracle_prompts/default_oracle_prompts.json --oracle-eval-batch-size 128 --oracle-judge-batch-size 64 --judge-instruction-path strongReject_v5.jinja2 --judge-thinking off --wandb on --wandb-run-name parallel_h200_20260522_210038__prompt_only_prompt_0 --set WANDB_GROUP=parallel_h200_20260522_210038 --set WANDB_JOB_TYPE=prompt_only_prompt_0 
+[2026-05-22 21:00:38] Launching job=oracle_target_control gpu=3 type=target_control depends_on=none
+[2026-05-22 21:00:38] DRY_RUN GPU 3: CUDA_VISIBLE_DEVICES=3 ./run_oracle_experiment.sh --preset oracle_target_control --target-prompt-offset 0 --target-prompt-limit 100 --num-rollouts 50 --target-judge-batch-size 64 --target-thinking off --judge-instruction-path strongReject_v5.jinja2 --judge-thinking off --wandb on --wandb-run-name parallel_h200_20260522_210038__oracle_target_control --set WANDB_GROUP=parallel_h200_20260522_210038 --set WANDB_JOB_TYPE=oracle_target_control 
+[2026-05-22 21:00:38] Job failed: target_shard_A gpu=0 status=1
