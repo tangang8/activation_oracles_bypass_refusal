@@ -7,7 +7,7 @@ set -euo pipefail
 # Mode/knob behavior (important):
 # - all_target_deterministic:
 #     * uses NUM_ROLLOUTS for target rollout generation/judging
-#     * ignores K_ROLLOUTS
+#     * uses K_ROLLOUTS to select deterministic oracle source rollouts when set
 #     * ignores NUM_ORACLE_ROLLOUTS (always 1 oracle rollout per target)
 # - sampled_target_repeats:
 #     * uses NUM_ROLLOUTS for target rollout generation/judging
@@ -64,7 +64,7 @@ model_name="Qwen/Qwen3-8B"                   # Base model identifier passed to M
 model_mapping="$(lookup_oracle_adapter_for_model "$model_name")"  # Lookup default oracle adapter for model_name.
 oracle_mode="all_target_deterministic"       # ORACLE_ROLLOUT_MODE: all_target_deterministic | sampled_target_repeats | prompt_only_repeats
 num_rollouts=50                              # NUM_ROLLOUTS: number of target rollouts to generate.
-k_rollouts=10                                # K_ROLLOUTS: max target rollouts selected for sampled oracle mode.
+k_rollouts=""                                # K_ROLLOUTS: optional max target rollouts selected for oracle stage.
 num_oracle_rollouts=1                        # NUM_ORACLE_ROLLOUTS: oracle repeats per selected target (or prompt-only repeats).
 target_prompt_offset=0                       # TARGET_PROMPT_OFFSET: dataset offset before selecting target prompts.
 target_prompt_limit=1                        # TARGET_PROMPT_LIMIT: how many target prompts to load.
@@ -142,7 +142,7 @@ Options:
   -h, --help                     Show this help
 
 Mode-specific knob usage:
-  all_target_deterministic: uses --num-rollouts; ignores --k-rollouts and --num-oracle-rollouts
+  all_target_deterministic: uses --num-rollouts; uses --k-rollouts when set; ignores --num-oracle-rollouts
   sampled_target_repeats:   uses --num-rollouts, --k-rollouts, --num-oracle-rollouts
   prompt_only_repeats:      uses --num-rollouts and --num-oracle-rollouts; ignores --k-rollouts
   NOTE: prompt_only_repeats still runs target rollout/judge stages in current pipeline.
@@ -150,6 +150,7 @@ Mode-specific knob usage:
 Preset behavior:
   full_deterministic_oracle:
     mode=all_target_deterministic, all 4 stages enabled
+    k-rollouts defaults to num-rollouts unless overridden
   sampled_target_repeats:
     mode=sampled_target_repeats, all 4 stages enabled
   prompt_only_oracle:
@@ -163,6 +164,7 @@ Preset behavior:
   rollout_post_prompt_oracle:
     mode=all_target_deterministic, all 4 stages enabled
     oracle probes limited to rollout_segment and post-prompt token_points
+    k-rollouts defaults to num-rollouts unless overridden
 
 Preset examples:
   ./run_oracle_experiment.sh --preset full_deterministic_oracle
@@ -322,6 +324,7 @@ case "$EXPERIMENT_PRESET" in
     set_preset_if_unset RUN_TARGET_JUDGING "true" "$RUN_TARGET_JUDGING_SET" "$RUN_TARGET_JUDGING_FROM_ENV"
     set_preset_if_unset RUN_ORACLE_ROLLOUTS "true" "$RUN_ORACLE_ROLLOUTS_SET" "$RUN_ORACLE_ROLLOUTS_FROM_ENV"
     set_preset_if_unset RUN_ORACLE_JUDGING "true" "$RUN_ORACLE_JUDGING_SET" "$RUN_ORACLE_JUDGING_FROM_ENV"
+    set_preset_if_unset K_ROLLOUTS "$NUM_ROLLOUTS" "$K_ROLLOUTS_SET" "$K_ROLLOUTS_FROM_ENV"
     ;;
   rollout_post_prompt_oracle)
     set_preset_if_unset MODE "all_target_deterministic" "$MODE_SET" "$MODE_FROM_ENV"
@@ -329,6 +332,7 @@ case "$EXPERIMENT_PRESET" in
     set_preset_if_unset RUN_TARGET_JUDGING "true" "$RUN_TARGET_JUDGING_SET" "$RUN_TARGET_JUDGING_FROM_ENV"
     set_preset_if_unset RUN_ORACLE_ROLLOUTS "true" "$RUN_ORACLE_ROLLOUTS_SET" "$RUN_ORACLE_ROLLOUTS_FROM_ENV"
     set_preset_if_unset RUN_ORACLE_JUDGING "true" "$RUN_ORACLE_JUDGING_SET" "$RUN_ORACLE_JUDGING_FROM_ENV"
+    set_preset_if_unset K_ROLLOUTS "$NUM_ROLLOUTS" "$K_ROLLOUTS_SET" "$K_ROLLOUTS_FROM_ENV"
     set_preset_if_unset ORACLE_INPUT_TYPES "rollout_segment,token_points" "$ORACLE_INPUT_TYPES_SET" "$ORACLE_INPUT_TYPES_FROM_ENV"
     set_preset_if_unset ORACLE_TOKEN_POINT_FILTER "post_prompt" "$ORACLE_TOKEN_POINT_FILTER_SET" "$ORACLE_TOKEN_POINT_FILTER_FROM_ENV"
     ;;
@@ -504,7 +508,11 @@ fi
 export ORACLE_ROLLOUT_MODE="$MODE"
 export MODEL_NAME="$MODEL_NAME"
 export NUM_ROLLOUTS="$NUM_ROLLOUTS"
-export K_ROLLOUTS="$K_ROLLOUTS"
+if [[ -n "$K_ROLLOUTS" ]]; then
+  export K_ROLLOUTS="$K_ROLLOUTS"
+else
+  unset K_ROLLOUTS || true
+fi
 export NUM_ORACLE_ROLLOUTS="$NUM_ORACLE_ROLLOUTS"
 export TARGET_PROMPT_OFFSET="$TARGET_PROMPT_OFFSET"
 export TARGET_PROMPT_LIMIT="$TARGET_PROMPT_LIMIT"
@@ -552,7 +560,7 @@ Running bypass_refusal.py with:
   MODEL_NAME=$MODEL_NAME
   ORACLE_ROLLOUT_MODE=$ORACLE_ROLLOUT_MODE
   NUM_ROLLOUTS=$NUM_ROLLOUTS
-  K_ROLLOUTS=$K_ROLLOUTS
+  K_ROLLOUTS=${K_ROLLOUTS:-<unset>}
   NUM_ORACLE_ROLLOUTS=$NUM_ORACLE_ROLLOUTS
   TARGET_PROMPT_OFFSET=$TARGET_PROMPT_OFFSET
   TARGET_PROMPT_LIMIT=$TARGET_PROMPT_LIMIT

@@ -15,7 +15,7 @@ NUM_ORACLE_ROLLOUTS="${NUM_ORACLE_ROLLOUTS:-50}"
 
 DEFAULT_ORACLE_PROMPTS_PATH="${DEFAULT_ORACLE_PROMPTS_PATH:-prompts/oracle_prompts/default_oracle_prompts.json}"
 SECOND_ORACLE_PROMPTS_PATH="${SECOND_ORACLE_PROMPTS_PATH:-prompts/oracle_prompts/model_answer_min_200_words.json}"
-GPU1_GPU2_DETERMINISTIC_PROMPTS_PATH="${GPU1_GPU2_DETERMINISTIC_PROMPTS_PATH:-$SECOND_ORACLE_PROMPTS_PATH}"
+ORACLE_PROMPTS_PATHS="${ORACLE_PROMPTS_PATHS:-$DEFAULT_ORACLE_PROMPTS_PATH,$SECOND_ORACLE_PROMPTS_PATH}"
 JUDGE_INSTRUCTION_PATH="${JUDGE_INSTRUCTION_PATH:-strongReject_v5.jinja2}"
 JUDGE_THINKING="${JUDGE_THINKING:-off}"
 LOG_ROOT="${LOG_ROOT:-logs/${RUN_LABEL}}"
@@ -33,6 +33,7 @@ ORACLE_JUDGE_BATCH_SIZE="${ORACLE_JUDGE_BATCH_SIZE:-64}"
 FULL_DETERMINISTIC_PRESET="${FULL_DETERMINISTIC_PRESET:-rollout_post_prompt_oracle}"
 
 DRY_RUN="${DRY_RUN:-0}"
+WAIT_POLL_SECONDS="${WAIT_POLL_SECONDS:-5}"
 PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 mkdir -p "$LOG_ROOT"
@@ -70,6 +71,19 @@ is_oom_log() {
 
 quote_cmd() {
   printf '%q ' "$@"
+}
+
+wait_for_file() {
+  local marker="$1"
+  local description="$2"
+  while [[ ! -f "$marker" ]]; do
+    if [[ -f "${marker}.failed" ]]; then
+      log "Stopping wait for $description because upstream target shard failed: ${marker}.failed"
+      return 1
+    fi
+    log "Waiting for $description: $marker"
+    sleep "$WAIT_POLL_SECONDS"
+  done
 }
 
 run_attempt() {
@@ -183,49 +197,68 @@ run_oracle_job() {
 
 run_prompt_only_sequence() {
   local gpu="$GPU_PROMPT_ONLY"
-  run_oracle_job "gpu${gpu}_prompt_only_default" "$gpu" \
-    --preset prompt_only_oracle \
-    --target-prompt-offset 0 \
-    --target-prompt-limit "$TARGET_PROMPT_TOTAL" \
-    --num-oracle-rollouts "$NUM_ORACLE_ROLLOUTS" \
-    --oracle-prompts-path "$DEFAULT_ORACLE_PROMPTS_PATH" || return 1
-
-  run_oracle_job "gpu${gpu}_prompt_only_min_200" "$gpu" \
-    --preset prompt_only_oracle \
-    --target-prompt-offset 0 \
-    --target-prompt-limit "$TARGET_PROMPT_TOTAL" \
-    --num-oracle-rollouts "$NUM_ORACLE_ROLLOUTS" \
-    --oracle-prompts-path "$SECOND_ORACLE_PROMPTS_PATH" || return 1
-
-  run_oracle_job "gpu${gpu}_full_deterministic_extra_shard_A_other_prompt" "$gpu" \
-    --preset "$FULL_DETERMINISTIC_PRESET" \
-    --target-prompt-offset "$shard_a_offset" \
-    --target-prompt-limit "$shard_a_limit" \
-    --num-rollouts "$NUM_ROLLOUTS" \
-    --oracle-prompts-path "$GPU1_GPU2_DETERMINISTIC_PROMPTS_PATH"
+  local idx=""
+  for idx in "${!ORACLE_PROMPT_PATH_ARRAY[@]}"; do
+    run_oracle_job "gpu${gpu}_prompt_only_prompt_${idx}" "$gpu" \
+      --preset prompt_only_oracle \
+      --target-prompt-offset 0 \
+      --target-prompt-limit "$TARGET_PROMPT_TOTAL" \
+      --num-oracle-rollouts "$NUM_ORACLE_ROLLOUTS" \
+      --oracle-prompts-path "${ORACLE_PROMPT_PATH_ARRAY[$idx]}" || return 1
+  done
 }
 
-run_target_then_full_sequence() {
+run_deterministic_job() {
+  local job_name="$1"
+  local gpu="$2"
+  local offset="$3"
+  local limit="$4"
+  local oracle_prompts_path="$5"
+  run_oracle_job "$job_name" "$gpu" \
+    --preset "$FULL_DETERMINISTIC_PRESET" \
+    --target-prompt-offset "$offset" \
+    --target-prompt-limit "$limit" \
+    --num-rollouts "$NUM_ROLLOUTS" \
+    --oracle-prompts-path "$oracle_prompts_path"
+}
+
+run_target_then_first_deterministic_sequence() {
   local label="$1"
   local gpu="$2"
   local offset="$3"
   local limit="$4"
+  local marker="$5"
 
-  run_target_job "gpu${gpu}_target_judging_shard_${label}" "$gpu" "$offset" "$limit" || return 1
+  if ! run_target_job "gpu${gpu}_target_judging_shard_${label}" "$gpu" "$offset" "$limit"; then
+    touch "${marker}.failed"
+    return 1
+  fi
+  touch "$marker"
 
-  run_oracle_job "gpu${gpu}_full_deterministic_shard_${label}_default" "$gpu" \
-    --preset "$FULL_DETERMINISTIC_PRESET" \
-    --target-prompt-offset "$offset" \
-    --target-prompt-limit "$limit" \
-    --num-rollouts "$NUM_ROLLOUTS" \
-    --oracle-prompts-path "$DEFAULT_ORACLE_PROMPTS_PATH" || return 1
+  if (( ${#ORACLE_PROMPT_PATH_ARRAY[@]} > 0 )); then
+    run_deterministic_job \
+      "gpu${gpu}_full_deterministic_shard_${label}_prompt_0" \
+      "$gpu" "$offset" "$limit" "${ORACLE_PROMPT_PATH_ARRAY[0]}"
+  fi
+}
 
-  run_oracle_job "gpu${gpu}_full_deterministic_shard_${label}_min_200" "$gpu" \
-    --preset "$FULL_DETERMINISTIC_PRESET" \
-    --target-prompt-offset "$offset" \
-    --target-prompt-limit "$limit" \
-    --num-rollouts "$NUM_ROLLOUTS" \
-    --oracle-prompts-path "$SECOND_ORACLE_PROMPTS_PATH"
+run_remaining_deterministic_sequence() {
+  local label="$1"
+  local gpu="$2"
+  local offset="$3"
+  local limit="$4"
+  local marker="$5"
+  local idx=""
+
+  wait_for_file "$marker" "target shard ${label}" || return 1
+  for idx in "${!ORACLE_PROMPT_PATH_ARRAY[@]}"; do
+    if (( idx == 0 )); then
+      continue
+    fi
+    run_deterministic_job \
+      "gpu${gpu}_full_deterministic_shard_${label}_prompt_${idx}" \
+      "$gpu" "$offset" "$limit" "${ORACLE_PROMPT_PATH_ARRAY[$idx]}" || return 1
+  done
 }
 
 run_oracle_target_control_once() {
@@ -234,6 +267,7 @@ run_oracle_target_control_once() {
   local batch=""
   local attempt=0
   local log_file=""
+  local success="false"
 
   for batch in "${batch_sizes[@]}"; do
     attempt=$((attempt + 1))
@@ -251,6 +285,7 @@ run_oracle_target_control_once() {
       --wandb-run-name "${RUN_LABEL}__gpu${gpu}_oracle_target_control" \
       --set "WANDB_GROUP=$RUN_LABEL" \
       --set "WANDB_JOB_TYPE=gpu${gpu}_oracle_target_control"; then
+      success="true"
       break
     fi
     if [[ "$DRY_RUN" == "1" ]] || ! is_oom_log "$log_file"; then
@@ -259,21 +294,29 @@ run_oracle_target_control_once() {
     log "oracle_target_control hit OOM; retrying with next target judge batch size."
   done
 
-  if [[ "${attempt}" -eq "${#batch_sizes[@]}" ]] && [[ "$DRY_RUN" != "1" ]] && is_oom_log "$log_file"; then
+  if [[ "$success" != "true" ]]; then
     log "oracle_target_control exhausted target judge OOM retry ladder."
     return 1
   fi
 
-  run_oracle_job "gpu${gpu}_full_deterministic_extra_shard_B_other_prompt" "$gpu" \
-    --preset "$FULL_DETERMINISTIC_PRESET" \
-    --target-prompt-offset "$shard_b_offset" \
-    --target-prompt-limit "$shard_b_limit" \
-    --num-rollouts "$NUM_ROLLOUTS" \
-    --oracle-prompts-path "$GPU1_GPU2_DETERMINISTIC_PROMPTS_PATH"
+  return 0
 }
 
-require_file "$DEFAULT_ORACLE_PROMPTS_PATH"
-require_file "$SECOND_ORACLE_PROMPTS_PATH"
+IFS=',' read -r -a ORACLE_PROMPT_PATH_ARRAY <<< "$ORACLE_PROMPTS_PATHS"
+if (( ${#ORACLE_PROMPT_PATH_ARRAY[@]} == 0 )); then
+  die "ORACLE_PROMPTS_PATHS must include at least one prompt file."
+fi
+seen_prompt_paths=" "
+for prompt_path in "${ORACLE_PROMPT_PATH_ARRAY[@]}"; do
+  if [[ -z "$prompt_path" ]]; then
+    die "ORACLE_PROMPTS_PATHS contains an empty path."
+  fi
+  if [[ "$seen_prompt_paths" == *" $prompt_path "* ]]; then
+    die "ORACLE_PROMPTS_PATHS contains duplicate path: $prompt_path"
+  fi
+  seen_prompt_paths+="$prompt_path "
+  require_file "$prompt_path"
+done
 ensure_distinct_gpus "$GPU_TARGET_A" "$GPU_PROMPT_ONLY" "$GPU_ORACLE_TARGET_CONTROL" "$GPU_TARGET_B"
 
 shard_a_offset=0
@@ -288,29 +331,42 @@ fi
 log "Parallel H200 run starting. run_label=$RUN_LABEL logs=$LOG_ROOT"
 log "Shard A offset=$shard_a_offset limit=$shard_a_limit on GPU $GPU_TARGET_A"
 log "Shard B offset=$shard_b_offset limit=$shard_b_limit on GPU $GPU_TARGET_B"
-log "Prompt-only default then min-200 on GPU $GPU_PROMPT_ONLY"
+log "Prompt-only oracle prompts on GPU $GPU_PROMPT_ONLY"
 log "Oracle target control once on GPU $GPU_ORACLE_TARGET_CONTROL"
 log "Full deterministic oracle preset: $FULL_DETERMINISTIC_PRESET"
-log "GPU1/GPU2 extra deterministic prompts path: $GPU1_GPU2_DETERMINISTIC_PROMPTS_PATH"
+log "Oracle prompt paths: $ORACLE_PROMPTS_PATHS"
+for prompt_idx in "${!ORACLE_PROMPT_PATH_ARRAY[@]}"; do
+  log "Deterministic work queue: shard=A prompt_index=$prompt_idx path=${ORACLE_PROMPT_PATH_ARRAY[$prompt_idx]}"
+  log "Deterministic work queue: shard=B prompt_index=$prompt_idx path=${ORACLE_PROMPT_PATH_ARRAY[$prompt_idx]}"
+done
+
+shard_a_ready_marker="$LOG_ROOT/shard_A_target_ready"
+shard_b_ready_marker="$LOG_ROOT/shard_B_target_ready"
 
 pids=()
 names=()
 
-run_target_then_full_sequence "A" "$GPU_TARGET_A" "$shard_a_offset" "$shard_a_limit" &
+run_target_then_first_deterministic_sequence "A" "$GPU_TARGET_A" "$shard_a_offset" "$shard_a_limit" "$shard_a_ready_marker" &
 pids+=("$!")
-names+=("target/full shard A")
+names+=("target/default deterministic shard A")
 
-run_target_then_full_sequence "B" "$GPU_TARGET_B" "$shard_b_offset" "$shard_b_limit" &
+run_target_then_first_deterministic_sequence "B" "$GPU_TARGET_B" "$shard_b_offset" "$shard_b_limit" "$shard_b_ready_marker" &
 pids+=("$!")
-names+=("target/full shard B")
+names+=("target/default deterministic shard B")
 
-run_prompt_only_sequence &
+(
+  run_prompt_only_sequence &&
+  run_remaining_deterministic_sequence "A" "$GPU_PROMPT_ONLY" "$shard_a_offset" "$shard_a_limit" "$shard_a_ready_marker"
+) &
 pids+=("$!")
-names+=("prompt-only wave 1/2")
+names+=("prompt-only plus remaining deterministic shard A")
 
-run_oracle_target_control_once &
+(
+  run_oracle_target_control_once &&
+  run_remaining_deterministic_sequence "B" "$GPU_ORACLE_TARGET_CONTROL" "$shard_b_offset" "$shard_b_limit" "$shard_b_ready_marker"
+) &
 pids+=("$!")
-names+=("oracle-target-control")
+names+=("oracle-target-control plus remaining deterministic shard B")
 
 failures=0
 for idx in "${!pids[@]}"; do

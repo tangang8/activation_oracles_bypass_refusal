@@ -75,6 +75,8 @@ class BypassRefusalPipelineTests(unittest.TestCase):
         self.assertEqual(cfg.target_judge_batch_size, 16)
         self.assertEqual(cfg.target_prompt_offset, 0)
         self.assertEqual(cfg.target_thinking_mode, "default")
+        self.assertIsNone(cfg.k_rollouts)
+        self.assertEqual(cfg.k_rollouts_raw, 0)
 
     def test_experiment_config_loads_workspace_env_before_reads(self) -> None:
         with (
@@ -112,6 +114,18 @@ class BypassRefusalPipelineTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Invalid integer value for NUM_ROLLOUTS"):
                 br.ExperimentConfig.from_env()
 
+    def test_experiment_config_invalid_k_rollouts_raises_when_set(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ORACLE_ADAPTER_PATH": "myorg/adapter",
+                "K_ROLLOUTS": "0",
+            },
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "Invalid K_ROLLOUTS"):
+                br.ExperimentConfig.from_env()
+
     def test_experiment_config_target_thinking_from_env(self) -> None:
         with patch.dict(
             os.environ,
@@ -135,6 +149,46 @@ class BypassRefusalPipelineTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "Invalid TARGET_THINKING"):
                 br.ExperimentConfig.from_env()
+
+    def test_oracle_cache_variant_omits_k_when_deterministic_uses_all_rollouts(self) -> None:
+        cfg = self._base_config(
+            oracle_rollout_mode="all_target_deterministic",
+            num_rollouts=50,
+            k_rollouts=50,
+            k_rollouts_raw=50,
+            oracle_input_types=["rollout_segment", "token_points"],
+            oracle_token_point_filter="post_prompt",
+        )
+        variant = br._oracle_cache_variant_key(cfg)
+        self.assertIsNotNone(variant)
+        self.assertNotIn("k_rollouts", variant)
+        self.assertIn("rollout_segment", variant)
+
+    def test_oracle_cache_variant_keeps_k_when_deterministic_truncates_rollouts(self) -> None:
+        cfg = self._base_config(
+            oracle_rollout_mode="all_target_deterministic",
+            num_rollouts=50,
+            k_rollouts=7,
+            k_rollouts_raw=7,
+            oracle_input_types=["rollout_segment", "token_points"],
+            oracle_token_point_filter="post_prompt",
+        )
+        variant = br._oracle_cache_variant_key(cfg)
+        self.assertIsNotNone(variant)
+        self.assertIn('"k_rollouts": 7', variant)
+
+    def test_oracle_cache_variant_uses_actual_target_rollout_count_when_available(self) -> None:
+        cfg = self._base_config(
+            oracle_rollout_mode="all_target_deterministic",
+            num_rollouts=50,
+            k_rollouts=49,
+            k_rollouts_raw=49,
+            oracle_input_types=["rollout_segment", "token_points"],
+            oracle_token_point_filter="post_prompt",
+        )
+        variant = br._oracle_cache_variant_key(cfg, target_rollout_entry_count=48)
+        self.assertIsNotNone(variant)
+        self.assertNotIn("k_rollouts", variant)
 
     def test_experiment_config_uses_explicit_env_stage_values(self) -> None:
         with patch.dict(

@@ -60,17 +60,17 @@ PROMPT_ONLY_ORACLE_GENERATION_KWARGS = {
 def _oracle_cache_variant_key(
     oracle_input_types: list[str] | None,
     oracle_token_point_filter: str,
+    k_rollouts: int | None = None,
 ) -> str | None:
-    if oracle_input_types is None and oracle_token_point_filter == "all":
+    if oracle_input_types is None and oracle_token_point_filter == "all" and k_rollouts is None:
         return None
-    return json.dumps(
-        {
-            "oracle_input_types": oracle_input_types,
-            "oracle_token_point_filter": oracle_token_point_filter,
-        },
-        sort_keys=True,
-        ensure_ascii=True,
-    )
+    variant = {
+        "oracle_input_types": oracle_input_types,
+        "oracle_token_point_filter": oracle_token_point_filter,
+    }
+    if k_rollouts is not None:
+        variant["k_rollouts"] = k_rollouts
+    return json.dumps(variant, sort_keys=True, ensure_ascii=True)
 
 
 def parse_oracle_rollout_mode(raw_mode: str | None) -> OracleRolloutMode:
@@ -408,6 +408,8 @@ def generate_deterministic_oracle_rollouts(
     oracle_generation_kwargs: dict[str, Any] | None = None,
     oracle_input_types: list[str] | None = None,
     oracle_token_point_filter: str = "all",
+    k_rollouts: int | None = None,
+    target_thinking_mode: str = "default",
     eval_batch_size: int = 32,
     dist_ctx: DistributedContext | None = None,
     perf: PerfLogger | None = None,
@@ -422,171 +424,20 @@ def generate_deterministic_oracle_rollouts(
     explicit_oracle_input_types = oracle_input_types is not None
     if oracle_input_types is None:
         oracle_input_types = list(DEFAULT_ORACLE_INPUT_TYPES)
-    cache_variant_key = _oracle_cache_variant_key(
-        oracle_input_types if explicit_oracle_input_types else None,
-        oracle_token_point_filter,
-    )
-
-    if not target_rollout_entries:
-        empty_path = deterministic_oracle_cache_file_path(
-            cache_root=cache_root,
-            target_model_name=target_model_name,
-            target_lora_path=target_lora_path,
-            oracle_model_name=model.config._name_or_path,
-            oracle_lora_path=oracle_lora_path,
-            oracle_generation_kwargs=oracle_generation_kwargs,
-            target_prompt="",
-            oracle_prompt=oracle_prompt,
-            cache_variant_key=cache_variant_key,
-        )
-        return [], empty_path, {"cache/oracle_hits": 0.0, "cache/oracle_missing": 0.0}
-
-    target_prompt = str(target_rollout_entries[0].get("target_prompt", ""))
-    cache_file = deterministic_oracle_cache_file_path(
-        cache_root=cache_root,
-        target_model_name=target_model_name,
-        target_lora_path=target_lora_path,
-        oracle_model_name=model.config._name_or_path,
-        oracle_lora_path=oracle_lora_path,
-        oracle_generation_kwargs=oracle_generation_kwargs,
-        target_prompt=target_prompt,
-        oracle_prompt=oracle_prompt,
-        cache_variant_key=cache_variant_key,
-    )
-
-    loaded = load_json(cache_file)
-    existing_entries = loaded if isinstance(loaded, list) else []
-    existing_by_index: dict[int, dict[str, Any]] = {}
-    for entry in existing_entries:
-        if not isinstance(entry, dict):
-            continue
-        try:
-            idx = _read_target_cache_rollout_index(entry, cache_file)
-        except Exception:
-            continue
-        existing_by_index[idx] = entry
-
-    missing_target_entries = [
-        entry
-        for entry in target_rollout_entries
-        if int(entry["rollout_index"]) not in existing_by_index
-    ]
-
-    rank = dist_ctx.rank if dist_ctx is not None else 0
-    world_size = dist_ctx.world_size if dist_ctx is not None else 1
-    cache_stats = {
-        "cache/oracle_hits": float(len(existing_by_index)),
-        "cache/oracle_missing": float(len(missing_target_entries)),
-        "cache/oracle_total": float(len(target_rollout_entries)),
-    }
-    if perf is not None:
-        perf.log_event(
-            "cache/oracle_deterministic_status",
-            cache_stats,
-            metadata={"rank": rank, "world_size": world_size},
-        )
-
-    if missing_target_entries:
-        formatted_target_prompts = [
-            format_user_target_prompt(tokenizer, str(entry.get("target_prompt", "")))
-            for entry in missing_target_entries
-        ]
-        target_responses = [str(entry.get("target_response", "")) for entry in missing_target_entries]
-        user_prompts = [str(entry.get("target_prompt", "")) for entry in missing_target_entries]
-
-        batched_oracle_results = run_oracle_batched(
-            model=model,
-            tokenizer=tokenizer,
-            device=device,
-            formatted_target_prompts=formatted_target_prompts,
-            target_responses=target_responses,
-            oracle_prompt=oracle_prompt,
-            user_prompts=user_prompts,
-            cache_root=cache_root,
-            target_lora_path=None,
-            oracle_lora_path=oracle_lora_path,
-            generation_kwargs=oracle_generation_kwargs,
-            eval_batch_size=eval_batch_size,
-            oracle_repeats=1,
-            oracle_input_types=oracle_input_types,
-            oracle_token_point_filter=oracle_token_point_filter,
-            oracle_input_source_type="target_rollout",
-            dist_ctx=dist_ctx,
-            perf=perf,
-        )
-        for result in batched_oracle_results:
-            result["oracle_prompt"] = oracle_prompt
-        new_entries = [
-            _to_deterministic_oracle_entry(target_entry, result)
-            for target_entry, result in zip(missing_target_entries, batched_oracle_results, strict=True)
-        ]
-    else:
-        new_entries = []
-
-    is_main = dist_ctx is None or not dist_ctx.enabled or dist_ctx.is_main
-    final_entries: list[dict[str, Any]] | None = None
-    if is_main:
-        merged_by_index = dict(existing_by_index)
-        for entry in new_entries:
-            merged_by_index[int(entry["rollout_index"])] = entry
-        final_entries = []
-        for target_entry in sorted(target_rollout_entries, key=lambda e: int(e["rollout_index"])):
-            idx = int(target_entry["rollout_index"])
-            if idx in merged_by_index:
-                final_entries.append(merged_by_index[idx])
-        write_json(cache_file, final_entries)
-
-    if dist_ctx is not None and dist_ctx.enabled:
-        final_entries = broadcast_object(dist_ctx, final_entries, src=0)
-    if final_entries is None:
-        final_entries = []
-    return final_entries, cache_file, cache_stats
-
-
-def generate_sampled_target_oracle_rollouts(
-    model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
-    device: torch.device,
-    oracle_prompt: str,
-    target_rollout_entries: list[dict[str, Any]],
-    target_model_name: str,
-    target_lora_path: str | None,
-    *,
-    num_oracle_rollouts: int,
-    k_rollouts: int | None,
-    oracle_lora_path: str | None = "oracle",
-    cache_root: str = "cache",
-    oracle_generation_kwargs: dict[str, Any] | None = None,
-    oracle_input_types: list[str] | None = None,
-    oracle_token_point_filter: str = "all",
-    eval_batch_size: int = 32,
-    dist_ctx: DistributedContext | None = None,
-    perf: PerfLogger | None = None,
-) -> tuple[list[dict[str, Any]], Path, dict[str, float]]:
-    if num_oracle_rollouts <= 0:
-        raise ValueError(f"num_oracle_rollouts must be > 0, got {num_oracle_rollouts}")
     if k_rollouts is not None and k_rollouts <= 0:
         raise ValueError(f"k_rollouts must be > 0 when provided, got {k_rollouts}")
-
-    oracle_generation_kwargs = _normalize_generation_kwargs(
-        oracle_generation_kwargs,
-        defaults=SAMPLED_ORACLE_GENERATION_KWARGS,
-        do_sample=True,
-        temperature=1.0,
+    sorted_targets = sorted(target_rollout_entries, key=lambda entry: int(entry["rollout_index"]))
+    selected_targets = sorted_targets[: min(k_rollouts, len(sorted_targets))] if k_rollouts is not None else sorted_targets
+    variant_k_rollouts = (
+        k_rollouts
+        if k_rollouts is not None and k_rollouts < len(sorted_targets)
+        else None
     )
-    explicit_oracle_input_types = oracle_input_types is not None
-    if oracle_input_types is None:
-        oracle_input_types = list(SAMPLED_ORACLE_INPUT_TYPES)
     cache_variant_key = _oracle_cache_variant_key(
         oracle_input_types if explicit_oracle_input_types else None,
         oracle_token_point_filter,
+        k_rollouts=variant_k_rollouts,
     )
-
-    sorted_targets = sorted(target_rollout_entries, key=lambda entry: int(entry["rollout_index"]))
-    if k_rollouts is not None:
-        selected_targets = sorted_targets[: min(k_rollouts, len(sorted_targets))]
-    else:
-        selected_targets = sorted_targets
 
     if not selected_targets:
         empty_path = deterministic_oracle_cache_file_path(
@@ -615,8 +466,189 @@ def generate_sampled_target_oracle_rollouts(
         cache_variant_key=cache_variant_key,
     )
 
+    loaded = load_json(cache_file)
+    existing_entries = loaded if isinstance(loaded, list) else []
+    existing_by_index: dict[int, dict[str, Any]] = {}
+    for entry in existing_entries:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            idx = _read_target_cache_rollout_index(entry, cache_file)
+        except Exception:
+            continue
+        existing_by_index[idx] = entry
+
+    missing_target_entries = [
+        entry
+        for entry in selected_targets
+        if int(entry["rollout_index"]) not in existing_by_index
+    ]
+    selected_hit_count = len(selected_targets) - len(missing_target_entries)
+
+    rank = dist_ctx.rank if dist_ctx is not None else 0
+    world_size = dist_ctx.world_size if dist_ctx is not None else 1
+    cache_stats = {
+        "cache/oracle_hits": float(selected_hit_count),
+        "cache/oracle_missing": float(len(missing_target_entries)),
+        "cache/oracle_total": float(len(selected_targets)),
+        "cache/oracle_deterministic_k_rollouts": float(k_rollouts or 0),
+    }
+    if perf is not None:
+        perf.log_event(
+            "cache/oracle_deterministic_status",
+            cache_stats,
+            metadata={"rank": rank, "world_size": world_size},
+        )
+
+    if missing_target_entries:
+        target_enable_thinking = False if target_thinking_mode == "off" else None
+        formatted_target_prompts = [
+            format_user_target_prompt(
+                tokenizer,
+                str(entry.get("target_prompt", "")),
+                enable_thinking=target_enable_thinking,
+            )
+            for entry in missing_target_entries
+        ]
+        target_responses = [str(entry.get("target_response", "")) for entry in missing_target_entries]
+        user_prompts = [str(entry.get("target_prompt", "")) for entry in missing_target_entries]
+
+        batched_oracle_results = run_oracle_batched(
+            model=model,
+            tokenizer=tokenizer,
+            device=device,
+            formatted_target_prompts=formatted_target_prompts,
+            target_responses=target_responses,
+            oracle_prompt=oracle_prompt,
+            user_prompts=user_prompts,
+            cache_root=cache_root,
+            target_lora_path=None,
+            oracle_lora_path=oracle_lora_path,
+            generation_kwargs=oracle_generation_kwargs,
+            eval_batch_size=eval_batch_size,
+            oracle_repeats=1,
+            oracle_input_types=oracle_input_types,
+            oracle_token_point_filter=oracle_token_point_filter,
+            oracle_input_source_type="target_rollout",
+            use_probe_cache=False,
+            dist_ctx=dist_ctx,
+            perf=perf,
+        )
+        for result in batched_oracle_results:
+            result["oracle_prompt"] = oracle_prompt
+        new_entries = [
+            _to_deterministic_oracle_entry(target_entry, result)
+            for target_entry, result in zip(missing_target_entries, batched_oracle_results, strict=True)
+        ]
+    else:
+        new_entries = []
+
+    is_main = dist_ctx is None or not dist_ctx.enabled or dist_ctx.is_main
+    final_entries: list[dict[str, Any]] | None = None
+    if is_main:
+        merged_by_index = dict(existing_by_index)
+        for entry in new_entries:
+            merged_by_index[int(entry["rollout_index"])] = entry
+        final_entries = []
+        for target_entry in selected_targets:
+            idx = int(target_entry["rollout_index"])
+            if idx in merged_by_index:
+                final_entries.append(merged_by_index[idx])
+        write_json(cache_file, final_entries)
+
+    if dist_ctx is not None and dist_ctx.enabled:
+        final_entries = broadcast_object(dist_ctx, final_entries, src=0)
+    if final_entries is None:
+        final_entries = []
+    return final_entries, cache_file, cache_stats
+
+
+def generate_sampled_target_oracle_rollouts(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    device: torch.device,
+    oracle_prompt: str,
+    target_rollout_entries: list[dict[str, Any]],
+    target_model_name: str,
+    target_lora_path: str | None,
+    *,
+    num_oracle_rollouts: int,
+    k_rollouts: int | None,
+    oracle_lora_path: str | None = "oracle",
+    cache_root: str = "cache",
+    oracle_generation_kwargs: dict[str, Any] | None = None,
+    oracle_input_types: list[str] | None = None,
+    oracle_token_point_filter: str = "all",
+    target_thinking_mode: str = "default",
+    eval_batch_size: int = 32,
+    dist_ctx: DistributedContext | None = None,
+    perf: PerfLogger | None = None,
+) -> tuple[list[dict[str, Any]], Path, dict[str, float]]:
+    if num_oracle_rollouts <= 0:
+        raise ValueError(f"num_oracle_rollouts must be > 0, got {num_oracle_rollouts}")
+    if k_rollouts is not None and k_rollouts <= 0:
+        raise ValueError(f"k_rollouts must be > 0 when provided, got {k_rollouts}")
+
+    oracle_generation_kwargs = _normalize_generation_kwargs(
+        oracle_generation_kwargs,
+        defaults=SAMPLED_ORACLE_GENERATION_KWARGS,
+        do_sample=True,
+        temperature=1.0,
+    )
+    explicit_oracle_input_types = oracle_input_types is not None
+    if oracle_input_types is None:
+        oracle_input_types = list(SAMPLED_ORACLE_INPUT_TYPES)
+
+    sorted_targets = sorted(target_rollout_entries, key=lambda entry: int(entry["rollout_index"]))
+    if k_rollouts is not None:
+        selected_targets = sorted_targets[: min(k_rollouts, len(sorted_targets))]
+    else:
+        selected_targets = sorted_targets
+    variant_k_rollouts = (
+        k_rollouts
+        if k_rollouts is not None and k_rollouts < len(sorted_targets)
+        else None
+    )
+    cache_variant_key = _oracle_cache_variant_key(
+        oracle_input_types if explicit_oracle_input_types else None,
+        oracle_token_point_filter,
+        k_rollouts=variant_k_rollouts,
+    )
+
+    if not selected_targets:
+        empty_path = deterministic_oracle_cache_file_path(
+            cache_root=cache_root,
+            target_model_name=target_model_name,
+            target_lora_path=target_lora_path,
+            oracle_model_name=model.config._name_or_path,
+            oracle_lora_path=oracle_lora_path,
+            oracle_generation_kwargs=oracle_generation_kwargs,
+            target_prompt="",
+            oracle_prompt=oracle_prompt,
+            cache_variant_key=cache_variant_key,
+        )
+        return [], empty_path, {"cache/oracle_hits": 0.0, "cache/oracle_missing": 0.0}
+
+    target_prompt = str(selected_targets[0].get("target_prompt", ""))
+    cache_file = deterministic_oracle_cache_file_path(
+        cache_root=cache_root,
+        target_model_name=target_model_name,
+        target_lora_path=target_lora_path,
+        oracle_model_name=model.config._name_or_path,
+        oracle_lora_path=oracle_lora_path,
+        oracle_generation_kwargs=oracle_generation_kwargs,
+        target_prompt=target_prompt,
+        oracle_prompt=oracle_prompt,
+        cache_variant_key=cache_variant_key,
+    )
+
+    target_enable_thinking = False if target_thinking_mode == "off" else None
     formatted_target_prompts = [
-        format_user_target_prompt(tokenizer, str(entry.get("target_prompt", "")))
+        format_user_target_prompt(
+            tokenizer,
+            str(entry.get("target_prompt", "")),
+            enable_thinking=target_enable_thinking,
+        )
         for entry in selected_targets
     ]
     target_responses = [str(entry.get("target_response", "")) for entry in selected_targets]
@@ -830,6 +862,7 @@ def generate_oracle_rollouts_for_mode(
     oracle_input_types_sampled: list[str] | None = None,
     oracle_input_types_prompt_only: list[str] | None = None,
     oracle_token_point_filter: str = "all",
+    target_thinking_mode: str = "default",
     eval_batch_size: int = 32,
     dist_ctx: DistributedContext | None = None,
     perf: PerfLogger | None = None,
@@ -848,6 +881,8 @@ def generate_oracle_rollouts_for_mode(
             oracle_generation_kwargs=oracle_generation_kwargs_deterministic,
             oracle_input_types=oracle_input_types_deterministic,
             oracle_token_point_filter=oracle_token_point_filter,
+            k_rollouts=k_rollouts,
+            target_thinking_mode=target_thinking_mode,
             eval_batch_size=eval_batch_size,
             dist_ctx=dist_ctx,
             perf=perf,
@@ -869,6 +904,7 @@ def generate_oracle_rollouts_for_mode(
             oracle_generation_kwargs=oracle_generation_kwargs_sampled,
             oracle_input_types=oracle_input_types_sampled,
             oracle_token_point_filter=oracle_token_point_filter,
+            target_thinking_mode=target_thinking_mode,
             eval_batch_size=eval_batch_size,
             dist_ctx=dist_ctx,
             perf=perf,

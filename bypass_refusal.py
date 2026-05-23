@@ -154,7 +154,9 @@ class ExperimentConfig:
                 )
 
         num_rollouts = _env_int("NUM_ROLLOUTS", 50)
-        k_rollouts_raw = _env_int("K_ROLLOUTS", num_rollouts)
+        k_rollouts_raw = _env_int("K_ROLLOUTS", 0)
+        if os.getenv("K_ROLLOUTS") is not None and k_rollouts_raw <= 0:
+            raise ValueError(f"Invalid K_ROLLOUTS={k_rollouts_raw}. Expected a positive integer when set.")
         k_rollouts = k_rollouts_raw if k_rollouts_raw > 0 else None
         num_oracle_rollouts = _env_int("NUM_ORACLE_ROLLOUTS", 1)
         oracle_prompts_raw = _env_str("ORACLE_PROMPTS_PATH", "prompts/oracle_prompts/default_oracle_prompts.json")
@@ -254,17 +256,28 @@ def _env_csv(name: str) -> list[str] | None:
     return values or None
 
 
-def _oracle_cache_variant_key(cfg: ExperimentConfig) -> str | None:
-    if cfg.oracle_input_types is None and cfg.oracle_token_point_filter == "all":
+def _oracle_cache_variant_key(
+    cfg: ExperimentConfig,
+    *,
+    target_rollout_entry_count: int | None = None,
+) -> str | None:
+    k_rollouts = None
+    if cfg.oracle_rollout_mode in {"all_target_deterministic", "sampled_target_repeats"}:
+        rollout_count = target_rollout_entry_count if target_rollout_entry_count is not None else cfg.num_rollouts
+        k_rollouts = (
+            cfg.k_rollouts
+            if cfg.k_rollouts is not None and cfg.k_rollouts < rollout_count
+            else None
+        )
+    if cfg.oracle_input_types is None and cfg.oracle_token_point_filter == "all" and k_rollouts is None:
         return None
-    return json.dumps(
-        {
-            "oracle_input_types": cfg.oracle_input_types,
-            "oracle_token_point_filter": cfg.oracle_token_point_filter,
-        },
-        sort_keys=True,
-        ensure_ascii=True,
-    )
+    variant = {
+        "oracle_input_types": cfg.oracle_input_types,
+        "oracle_token_point_filter": cfg.oracle_token_point_filter,
+    }
+    if k_rollouts is not None:
+        variant["k_rollouts"] = k_rollouts
+    return json.dumps(variant, sort_keys=True, ensure_ascii=True)
 
 
 def _parse_bool(raw: str, *, field_name: str) -> bool:
@@ -460,6 +473,7 @@ def run_pipeline_for_target_prompt(
                 oracle_input_types_sampled=cfg.oracle_input_types,
                 oracle_input_types_prompt_only=cfg.oracle_input_types,
                 oracle_token_point_filter=cfg.oracle_token_point_filter,
+                target_thinking_mode=cfg.target_thinking_mode,
                 eval_batch_size=cfg.oracle_eval_batch_size,
                 dist_ctx=ctx,
                 perf=perf,
@@ -505,7 +519,10 @@ def run_pipeline_for_target_prompt(
                         oracle_lora_path=cfg.oracle_lora_path,
                         oracle_generation_kwargs=cfg.oracle_judge_generation_kwargs(),
                         oracle_rollouts_dir_base=oracle_rollouts_dir_base_for_mode(cfg.oracle_rollout_mode),
-                        oracle_cache_variant_key=_oracle_cache_variant_key(cfg),
+                        oracle_cache_variant_key=_oracle_cache_variant_key(
+                            cfg,
+                            target_rollout_entry_count=len(oracle_source_entries),
+                        ),
                         judge_batch_size=cfg.oracle_judge_batch_size,
                         judge_lora_path=cfg.judge_lora_path,
                         judge_thinking_mode=cfg.judge_thinking_mode,

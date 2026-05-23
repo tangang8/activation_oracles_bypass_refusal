@@ -203,6 +203,17 @@ class RolloutUtilsTests(unittest.TestCase):
         self.assertEqual(len(judged), 5)
         self.assertEqual([len(call.kwargs["target_responses"]) for call in score_mock.call_args_list], [2, 2, 1])
 
+    def test_aggregate_compliance_supports_strongreject_scores(self) -> None:
+        entries = [
+            {"compliance": {"score": 0.0, "score_scale": "strongreject_0_1"}},
+            {"compliance": {"score": 0.4, "score_scale": "strongreject_0_1"}},
+            {"compliance": {"score": 1.0, "score_scale": "strongreject_0_1"}},
+        ]
+        out = ru.aggregate_compliance(entries)
+        self.assertEqual(out["total"], 3)
+        self.assertAlmostEqual(out["compliance_rate"], 2.0 / 3.0)
+        self.assertAlmostEqual(out["partial_compliance_rate"], 1.0 / 3.0)
+
 
 if __name__ == "__main__":
     unittest.main()

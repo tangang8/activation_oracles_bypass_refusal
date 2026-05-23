@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -17,6 +18,7 @@ if torch is not None:
         PROMPT_ONLY_REPEATS,
         SAMPLED_TARGET_REPEATS,
         generate_oracle_rollouts_for_mode,
+        generate_deterministic_oracle_rollouts,
         generate_prompt_only_oracle_rollouts,
     )
 else:
@@ -24,6 +26,7 @@ else:
     PROMPT_ONLY_REPEATS = "prompt_only_repeats"
     SAMPLED_TARGET_REPEATS = "sampled_target_repeats"
     generate_oracle_rollouts_for_mode = None
+    generate_deterministic_oracle_rollouts = None
     generate_prompt_only_oracle_rollouts = None
 
 try:
@@ -140,6 +143,34 @@ class OracleModeRoutingTests(unittest.TestCase):
         deterministic_mock.assert_called_once()
         sampled_mock.assert_called_once()
         prompt_mock.assert_called_once()
+        self.assertEqual(deterministic_mock.call_args.kwargs["target_thinking_mode"], "default")
+        self.assertIsNone(deterministic_mock.call_args.kwargs["k_rollouts"])
+        self.assertEqual(sampled_mock.call_args.kwargs["target_thinking_mode"], "default")
+        self.assertIsNone(sampled_mock.call_args.kwargs["k_rollouts"])
+
+    def test_mode_router_forwards_target_thinking_off(self) -> None:
+        model = SimpleNamespace(config=SimpleNamespace(_name_or_path="Qwen/Qwen3-8B"))
+        tokenizer = object()
+        device = torch.device("cpu")
+
+        with patch(
+            "oracle_rollout_utils.generate_deterministic_oracle_rollouts",
+            return_value=([], Path("det.json"), {}),
+        ) as deterministic_mock:
+            generate_oracle_rollouts_for_mode(
+                mode=ALL_TARGET_DETERMINISTIC,
+                model=model,
+                tokenizer=tokenizer,
+                device=device,
+                oracle_prompt="o",
+                target_prompt="t",
+                target_rollout_entries=[],
+                target_model_name="Qwen/Qwen3-8B",
+                target_lora_path="default",
+                target_thinking_mode="off",
+            )
+
+        self.assertEqual(deterministic_mock.call_args.kwargs["target_thinking_mode"], "off")
 
     def test_prompt_only_mode_forces_temp_one_and_prompt_cache(self) -> None:
         model = SimpleNamespace(config=SimpleNamespace(_name_or_path="Qwen/Qwen3-8B"))
@@ -213,6 +244,120 @@ class OracleModeRoutingTests(unittest.TestCase):
                     num_oracle_rollouts=2,
                     oracle_generation_kwargs={"temperature": 0.25},
                 )
+
+    def test_deterministic_mode_limits_rollouts_and_disables_probe_cache(self) -> None:
+        model = SimpleNamespace(config=SimpleNamespace(_name_or_path="Qwen/Qwen3-8B"))
+        tokenizer = object()
+        target_entries = [
+            {"rollout_index": 3, "target_prompt": "target prompt", "target_response": "third"},
+            {"rollout_index": 1, "target_prompt": "target prompt", "target_response": "first"},
+        ]
+        oracle_result = {
+            "oracle_repeats": 1,
+            "combined_text": "FORMATTED_PROMPTfirst",
+            "points": {"combined_text": "FORMATTED_PROMPTfirst", "token_points": {"first_rollout_token": 7}},
+            "full_seq": [],
+            "segment": [],
+            "prompt_segment": [],
+            "rollout_segment": ["decoded rollout"],
+            "tokens": {},
+            "token_points": {7: ["decoded token"]},
+        }
+
+        with (
+            patch("oracle_rollout_utils.format_user_target_prompt", return_value="FORMATTED_PROMPT"),
+            patch("oracle_rollout_utils.deterministic_oracle_cache_file_path", return_value=Path("cache/det.json")) as cache_path_mock,
+            patch("oracle_rollout_utils.load_json", return_value=[]),
+            patch("oracle_rollout_utils.write_json") as write_json_mock,
+            patch("oracle_rollout_utils.run_oracle_batched", return_value=[oracle_result]) as run_oracle_mock,
+        ):
+            entries, cache_file, stats = generate_deterministic_oracle_rollouts(
+                model=model,
+                tokenizer=tokenizer,
+                device=torch.device("cpu"),
+                oracle_prompt="oracle prompt",
+                target_rollout_entries=target_entries,
+                target_model_name="Qwen/Qwen3-8B",
+                target_lora_path="default",
+                oracle_input_types=["rollout_segment", "token_points"],
+                oracle_token_point_filter="post_prompt",
+                k_rollouts=1,
+            )
+
+        self.assertEqual(cache_file, Path("cache/det.json"))
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["rollout_index"], 1)
+        self.assertEqual(entries[0]["target_response"], "first")
+        self.assertEqual(stats["cache/oracle_total"], 1.0)
+        run_oracle_kwargs = run_oracle_mock.call_args.kwargs
+        self.assertEqual(run_oracle_kwargs["target_responses"], ["first"])
+        self.assertFalse(run_oracle_kwargs["use_probe_cache"])
+        cache_variant = json.loads(cache_path_mock.call_args.kwargs["cache_variant_key"])
+        self.assertEqual(cache_variant["k_rollouts"], 1)
+        self.assertEqual(cache_variant["oracle_token_point_filter"], "post_prompt")
+        write_json_mock.assert_called_once()
+
+    def test_deterministic_mode_omits_k_variant_when_k_equals_available_rollouts(self) -> None:
+        model = SimpleNamespace(config=SimpleNamespace(_name_or_path="Qwen/Qwen3-8B"))
+        tokenizer = object()
+        target_entries = [
+            {"rollout_index": 0, "target_prompt": "target prompt", "target_response": "zero"},
+            {"rollout_index": 1, "target_prompt": "target prompt", "target_response": "one"},
+        ]
+        oracle_results = [
+            {
+                "oracle_repeats": 1,
+                "combined_text": f"FORMATTED_PROMPT{response}",
+                "points": {"combined_text": f"FORMATTED_PROMPT{response}", "token_points": {}},
+                "full_seq": [],
+                "segment": [],
+                "prompt_segment": [],
+                "rollout_segment": [f"decoded {response}"],
+                "tokens": {},
+                "token_points": {},
+            }
+            for response in ("zero", "one")
+        ]
+
+        with (
+            patch("oracle_rollout_utils.format_user_target_prompt", return_value="FORMATTED_PROMPT"),
+            patch("oracle_rollout_utils.deterministic_oracle_cache_file_path", return_value=Path("cache/det.json")) as cache_path_mock,
+            patch("oracle_rollout_utils.load_json", return_value=[]),
+            patch("oracle_rollout_utils.write_json"),
+            patch("oracle_rollout_utils.run_oracle_batched", return_value=oracle_results) as run_oracle_mock,
+        ):
+            entries, _, _ = generate_deterministic_oracle_rollouts(
+                model=model,
+                tokenizer=tokenizer,
+                device=torch.device("cpu"),
+                oracle_prompt="oracle prompt",
+                target_rollout_entries=target_entries,
+                target_model_name="Qwen/Qwen3-8B",
+                target_lora_path="default",
+                oracle_input_types=["rollout_segment", "token_points"],
+                oracle_token_point_filter="post_prompt",
+                k_rollouts=2,
+            )
+
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(run_oracle_mock.call_args.kwargs["target_responses"], ["zero", "one"])
+        cache_variant = json.loads(cache_path_mock.call_args.kwargs["cache_variant_key"])
+        self.assertNotIn("k_rollouts", cache_variant)
+        self.assertEqual(cache_variant["oracle_token_point_filter"], "post_prompt")
+
+    def test_deterministic_mode_rejects_nonpositive_k_rollouts(self) -> None:
+        model = SimpleNamespace(config=SimpleNamespace(_name_or_path="Qwen/Qwen3-8B"))
+        with self.assertRaisesRegex(ValueError, "k_rollouts must be > 0"):
+            generate_deterministic_oracle_rollouts(
+                model=model,
+                tokenizer=object(),
+                device=torch.device("cpu"),
+                oracle_prompt="oracle prompt",
+                target_rollout_entries=[],
+                target_model_name="Qwen/Qwen3-8B",
+                target_lora_path="default",
+                k_rollouts=0,
+            )
 
 
 if __name__ == "__main__":

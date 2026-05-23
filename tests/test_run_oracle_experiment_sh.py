@@ -186,12 +186,33 @@ class RunScriptTests(unittest.TestCase):
         proc = self._run_with_fake_python("--preset", "rollout_post_prompt_oracle")
         self.assertEqual(proc.returncode, 0)
         self.assertIn("ORACLE_ROLLOUT_MODE=all_target_deterministic", proc.stdout)
+        self.assertIn("K_ROLLOUTS=50", proc.stdout)
         self.assertIn("RUN_TARGET_ROLLOUTS=true", proc.stdout)
         self.assertIn("RUN_TARGET_JUDGING=true", proc.stdout)
         self.assertIn("RUN_ORACLE_ROLLOUTS=true", proc.stdout)
         self.assertIn("RUN_ORACLE_JUDGING=true", proc.stdout)
         self.assertIn("ORACLE_INPUT_TYPES=rollout_segment,token_points", proc.stdout)
         self.assertIn("ORACLE_TOKEN_POINT_FILTER=post_prompt", proc.stdout)
+
+    def test_rollout_post_prompt_oracle_allows_explicit_k_rollouts_override(self) -> None:
+        proc = self._run_with_fake_python(
+            "--preset",
+            "rollout_post_prompt_oracle",
+            "--k-rollouts",
+            "3",
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("K_ROLLOUTS=3", proc.stdout)
+
+    def test_full_deterministic_oracle_defaults_k_rollouts_to_num_rollouts(self) -> None:
+        proc = self._run_with_fake_python(
+            "--preset",
+            "full_deterministic_oracle",
+            "--num-rollouts",
+            "7",
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("K_ROLLOUTS=7", proc.stdout)
 
     def test_explicit_stage_flags_override_defaults(self) -> None:
         proc = self._run_with_fake_python(

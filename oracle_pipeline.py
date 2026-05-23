@@ -209,6 +209,7 @@ def run_oracle_batched(
     # New fourth mode ("token_points")
     token_point_indices_by_target: list[list[int]] | None = None,
     oracle_input_source_type: str | None = None,
+    use_probe_cache: bool = True,
     dist_ctx: DistributedContext | None = None,
     perf: PerfLogger | None = None,
 ) -> list[dict[str, Any]]:
@@ -245,7 +246,7 @@ def run_oracle_batched(
       - "tokens"          : contiguous token-by-token range (token_start_idx:token_end_idx)
       - "token_points"    : sparse token index probes from token_point_indices_by_target
 
-    Cache layout per target rollout:
+    Cache layout per target rollout when use_probe_cache=True:
       cache/target_{target_model}[_lora-{target_lora}]/
       oracle_rollouts_temp-{temperature}/oracle_{oracle_model}[_lora-{oracle_lora}]/
       {oracle_prompt_preview_hash}/{user_prompt_preview_hash}/{cache_key_hash}.json
@@ -380,33 +381,43 @@ def run_oracle_batched(
     cached_counts_by_target: list[int] = []
     cache_status_by_target: list[tuple[OracleInputProvenance, int, int]] = []
     for target_idx, spec in enumerate(combined_specs):
-        cache_key = {
-            "oracle_prompt": oracle_prompt,
-            "combined_text": spec["combined_text"],
-            "oracle_input_types": oracle_input_types,
-            "segment_start_idx": segment_start_idx,
-            "segment_end_idx": segment_end_idx,
-            "token_start_idx": token_start_idx,
-            "token_end_idx": token_end_idx,
-            "token_point_indices": token_point_indices_by_target[target_idx],
-            "layer_percent": layer_percent,
-            "injection_layer": injection_layer,
-            "steering_coefficient": steering_coefficient,
-        }
-        if oracle_token_point_filter != "all":
-            cache_key["oracle_token_point_filter"] = oracle_token_point_filter
-        cache_key_text = json.dumps(cache_key, sort_keys=True, ensure_ascii=True)
-        cache_path = oracle_cache_file_path(
-            cache_root=cache_root,
-            target_model_name=target_model_name,
-            target_lora_path=target_lora_path,
-            oracle_model_name=oracle_model_name,
-            oracle_lora_path=oracle_lora_path,
-            generation_kwargs=generation_kwargs,
-            oracle_prompt=oracle_prompt,
-            user_prompt_preview_text=user_prompts_list[target_idx],
-            cache_key_text=cache_key_text,
-        )
+        if use_probe_cache:
+            cache_key = {
+                "oracle_prompt": oracle_prompt,
+                "combined_text": spec["combined_text"],
+                "oracle_input_types": oracle_input_types,
+                "segment_start_idx": segment_start_idx,
+                "segment_end_idx": segment_end_idx,
+                "token_start_idx": token_start_idx,
+                "token_end_idx": token_end_idx,
+                "token_point_indices": token_point_indices_by_target[target_idx],
+                "layer_percent": layer_percent,
+                "injection_layer": injection_layer,
+                "steering_coefficient": steering_coefficient,
+            }
+            if oracle_token_point_filter != "all":
+                cache_key["oracle_token_point_filter"] = oracle_token_point_filter
+            cache_key_text = json.dumps(cache_key, sort_keys=True, ensure_ascii=True)
+            cache_path = oracle_cache_file_path(
+                cache_root=cache_root,
+                target_model_name=target_model_name,
+                target_lora_path=target_lora_path,
+                oracle_model_name=oracle_model_name,
+                oracle_lora_path=oracle_lora_path,
+                generation_kwargs=generation_kwargs,
+                oracle_prompt=oracle_prompt,
+                user_prompt_preview_text=user_prompts_list[target_idx],
+                cache_key_text=cache_key_text,
+            )
+            cached = load_json(cache_path)
+            cached_entries = (
+                cached
+                if isinstance(cached, list) and all(isinstance(entry, dict) for entry in cached)
+                else []
+            )
+        else:
+            cache_path = Path("__probe_cache_disabled__")
+            cached_entries = []
         provenance = OracleInputProvenance(
             source_type=source_type,
             source_index_label=source_index_label,
@@ -414,12 +425,6 @@ def run_oracle_batched(
             cache_path=cache_path,
         )
         provenance_by_input.append(provenance)
-        cached = load_json(cache_path)
-        cached_entries = (
-            cached
-            if isinstance(cached, list) and all(isinstance(entry, dict) for entry in cached)
-            else []
-        )
         cached_by_target.append(cached_entries)
         cached_count = len(cached_entries)
         cached_counts_by_target.append(cached_count)
@@ -429,7 +434,7 @@ def run_oracle_batched(
     full_hits = sum(1 for _, _, missing_count in cache_status_by_target if missing_count == 0)
     partial_hits = sum(1 for _, cached_count, missing_count in cache_status_by_target if cached_count > 0 and missing_count > 0)
     misses = sum(1 for _, cached_count, _ in cache_status_by_target if cached_count == 0)
-    if perf is not None:
+    if use_probe_cache and perf is not None:
         missing_repeats = sum(missing_count for _, _, missing_count in cache_status_by_target)
         perf.log_event(
             "cache/oracle_status",
@@ -442,16 +447,22 @@ def run_oracle_batched(
             },
             metadata={"rank": rank, "world_size": world_size},
         )
-    maybe_log(
-        f"[oracle cache] source={source_type} oracle_inputs={len(cache_status_by_target)} "
-        f"requested_repeats={oracle_repeats} full_hits={full_hits} partial_hits={partial_hits} misses={misses}"
-    )
+    if use_probe_cache:
+        maybe_log(
+            f"[oracle probe cache] source={source_type} oracle_inputs={len(cache_status_by_target)} "
+            f"requested_repeats={oracle_repeats} full_hits={full_hits} partial_hits={partial_hits} misses={misses}"
+        )
+    else:
+        maybe_log(
+            f"[oracle probe cache] disabled source={source_type} oracle_inputs={len(cache_status_by_target)} "
+            f"requested_repeats={oracle_repeats}"
+        )
     missing_status = [
         (provenance, cached_count, missing_count)
         for provenance, cached_count, missing_count in cache_status_by_target
         if missing_count > 0
     ]
-    if missing_status:
+    if use_probe_cache and missing_status:
         preview = ", ".join(
             (
                 f"{provenance.source_index_label}={provenance.source_index}"
@@ -663,14 +674,14 @@ def run_oracle_batched(
 
             append_entries = [target_outputs[idx] for idx in sorted(target_outputs.keys())]
             local_updates[global_target_idx] = append_entries
-            if append_entries:
+            if use_probe_cache and append_entries:
                 # Checkpoint each completed target immediately so long runs can resume
                 # even if interrupted before the final gather/merge phase.
                 checkpoint_entries = cached_by_target[global_target_idx] + append_entries
                 provenance = provenance_by_input[global_target_idx]
                 write_json(provenance.cache_path, checkpoint_entries)
                 maybe_log(
-                    f"[oracle cache] checkpoint {provenance.source_index_label}={provenance.source_index} "
+                    f"[oracle probe cache] checkpoint {provenance.source_index_label}={provenance.source_index} "
                     f"(added_repeats={len(append_entries)}, checkpoint_total={len(checkpoint_entries)}) "
                     f"cache_file={provenance.cache_path}"
                 )
@@ -691,14 +702,17 @@ def run_oracle_batched(
                     continue
                 cached_by_target[global_idx].extend(append_entries)
                 provenance = provenance_by_input[global_idx]
-                write_json(provenance.cache_path, cached_by_target[global_idx])
+                if use_probe_cache:
+                    write_json(provenance.cache_path, cached_by_target[global_idx])
                 updated_targets += 1
-                maybe_log(
-                    f"[oracle cache] updated {provenance.source_index_label}={provenance.source_index} "
-                    f"(added_repeats={len(append_entries)}, total_cached={len(cached_by_target[global_idx])}) "
-                    f"cache_file={provenance.cache_path}"
-                )
-        maybe_log(f"[oracle cache] updated cache files for {updated_targets} oracle input(s)")
+                if use_probe_cache:
+                    maybe_log(
+                        f"[oracle probe cache] updated {provenance.source_index_label}={provenance.source_index} "
+                        f"(added_repeats={len(append_entries)}, total_cached={len(cached_by_target[global_idx])}) "
+                        f"cache_file={provenance.cache_path}"
+                    )
+        if use_probe_cache:
+            maybe_log(f"[oracle probe cache] updated cache files for {updated_targets} oracle input(s)")
 
         final_results = [
             _aggregate_oracle_repeat_entries(cached_by_target[i][:oracle_repeats])
