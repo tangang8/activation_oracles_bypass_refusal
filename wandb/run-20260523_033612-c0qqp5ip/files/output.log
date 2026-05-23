@@ -1,0 +1,52 @@
+[wandb] logging to run: parallel_h200_20260523_033605__gpu1_prompt_only_default (c0qqp5ip)
+Loading tokenizer: Qwen/Qwen3-8B
+Loading model: Qwen/Qwen3-8B
+Loading checkpoint shards: 100%|██████████| 5/5 [00:03<00:00,  1.34it/s]
+Loading adapter 'oracle' from: adamkarvonen/checkpoints_latentqa_cls_past_lens_addition_Qwen3-8B
+/workspace/.venv/lib/python3.12/site-packages/peft/tuners/tuners_utils.py:196: UserWarning: Already found a `peft_config` attribute in the model. This will lead to having multiple adapters in the model. Make sure to know what you are doing!
+  warnings.warn(
+Traceback (most recent call last):
+  File "/workspace/activation_oracles_extensions/bypass_refusal.py", line 715, in <module>
+    main(ExperimentConfig.from_env())
+  File "/workspace/activation_oracles_extensions/bypass_refusal.py", line 654, in main
+    tokenizer, model = load_model_stack(
+                       ^^^^^^^^^^^^^^^^^
+  File "/workspace/activation_oracles_extensions/model_loading_utils.py", line 71, in load_model_stack
+    load_adapters(model, adapter_specs)
+  File "/workspace/activation_oracles_extensions/model_loading_utils.py", line 46, in load_adapters
+    model.load_adapter(
+  File "/workspace/.venv/lib/python3.12/site-packages/transformers/integrations/peft.py", line 244, in load_adapter
+    inject_adapter_in_model(peft_config, self, adapter_name, **peft_load_kwargs)
+  File "/workspace/.venv/lib/python3.12/site-packages/peft/mapping.py", line 85, in inject_adapter_in_model
+    peft_model = tuner_cls(
+                 ^^^^^^^^^^
+  File "/workspace/.venv/lib/python3.12/site-packages/peft/tuners/tuners_utils.py", line 209, in __init__
+    self.inject_adapter(self.model, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage, state_dict=state_dict)
+  File "/workspace/.venv/lib/python3.12/site-packages/peft/tuners/tuners_utils.py", line 578, in inject_adapter
+    self._create_and_replace(
+  File "/workspace/.venv/lib/python3.12/site-packages/peft/tuners/lora/model.py", line 259, in _create_and_replace
+    new_module = self._create_new_module(lora_config, adapter_name, target, device_map=device_map, **kwargs)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/.venv/lib/python3.12/site-packages/peft/tuners/lora/model.py", line 365, in _create_new_module
+    new_module = dispatcher(target, adapter_name, lora_config=lora_config, **kwargs)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/.venv/lib/python3.12/site-packages/peft/tuners/lora/layer.py", line 2171, in dispatch_default
+    new_module = Linear(target, adapter_name, **kwargs)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/.venv/lib/python3.12/site-packages/peft/tuners/lora/layer.py", line 609, in __init__
+    self.update_layer(
+  File "/workspace/.venv/lib/python3.12/site-packages/peft/tuners/lora/layer.py", line 249, in update_layer
+    self._move_adapter_to_device_of_base_layer(adapter_name)
+  File "/workspace/.venv/lib/python3.12/site-packages/peft/tuners/tuners_utils.py", line 1105, in _move_adapter_to_device_of_base_layer
+    adapter_layer[adapter_name] = adapter_layer[adapter_name].to(device, dtype=dtype)
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1355, in to
+    return self._apply(convert)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 942, in _apply
+    param_applied = fn(param)
+                    ^^^^^^^^^
+  File "/workspace/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1341, in convert
+    return t.to(
+           ^^^^^
+KeyboardInterrupt
