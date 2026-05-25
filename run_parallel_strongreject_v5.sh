@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 timestamp="$(date +%Y%m%d_%H%M%S)"
-RUN_LABEL="${RUN_LABEL:-parallel_h200_${timestamp}}"
+RUN_LABEL="${RUN_LABEL:-parallel_${timestamp}}"
 RUN_ORACLE_EXPERIMENT="${RUN_ORACLE_EXPERIMENT:-./run_oracle_experiment.sh}"
 
 TARGET_PROMPT_TOTAL="${TARGET_PROMPT_TOTAL:-100}"
@@ -505,7 +505,7 @@ for prompt_idx in "${!ORACLE_PROMPT_PATH_ARRAY[@]}"; do
   done
 done
 
-log "Parallel H200 run starting. run_label=$RUN_LABEL logs=$LOG_ROOT"
+log "Parallel run starting. run_label=$RUN_LABEL logs=$LOG_ROOT"
 log "GPU pool: ${GPU_ID_ARRAY[*]}"
 log "Target shard A offset=$shard_a_offset limit=$shard_a_limit"
 if (( shard_b_limit > 0 )); then
@@ -569,4 +569,4 @@ if (( failures > 0 )); then
   die "$failures job(s) failed or were blocked. Check logs under $LOG_ROOT."
 fi
 
-log "All parallel H200 jobs completed successfully."
+log "All parallel jobs completed successfully."

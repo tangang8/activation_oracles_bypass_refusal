@@ -7,10 +7,10 @@ import unittest
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).resolve().parent.parent / "run_parallel_h200_strongreject_v5.sh"
+SCRIPT = Path(__file__).resolve().parent.parent / "run_parallel_strongreject_v5.sh"
 
 
-class RunParallelH200ScriptTests(unittest.TestCase):
+class RunParallelScriptTests(unittest.TestCase):
     def _write_fake_runner(self, tmpdir: str, mode: str) -> Path:
         fake = Path(tmpdir) / "fake_oracle_runner.sh"
         if mode == "success":
@@ -77,7 +77,7 @@ class RunParallelH200ScriptTests(unittest.TestCase):
                 proc = subprocess.run([str(SCRIPT)], capture_output=True, text=True, check=False, env=env)
                 self.assertEqual(proc.returncode, 0)
                 self.assertIn(f"GPU pool: {gpu_ids.replace(',', ' ')}", proc.stdout)
-                self.assertIn("All parallel H200 jobs completed successfully.", proc.stdout)
+                self.assertIn("All parallel jobs completed successfully.", proc.stdout)
                 self.assertEqual(proc.stdout.count("job=deterministic_shard_A_prompt_0 type="), 1)
                 self.assertEqual(proc.stdout.count("job=deterministic_shard_B_prompt_0 type="), 1)
 
