@@ -33,7 +33,7 @@ ROLLOUT_POST_PROMPT_VARIANT = json.dumps(
 @dataclass(frozen=True)
 class StrongRejectCompileConfig:
     cache_root: Path = Path("cache")
-    output_dir: Path = Path("compiled_strongreject_results")
+    output_dir: Path = Path("results/compiled_strongreject_results")
     judge_instruction_path: str = "strongReject_v5.jinja2"
     target_model_name: str = "Qwen/Qwen3-8B"
     judge_model_name: str = "Qwen/Qwen3-8B"
@@ -347,6 +347,7 @@ def _prompt_level_rows(detail_rows: list[dict[str, Any]], thresholds: tuple[floa
             "probe_kind": key[9],
             "probe_name": key[10],
             "n_scored": len(scores),
+            "oracle_rollout_indices": sorted({r["oracle_rollout_index"] for r in rows if r.get("oracle_rollout_index") is not None}),
             "mean_score": _round(_mean(scores)),
             "sd_score_within_prompt": _round(_sample_sd(scores)),
         }
@@ -551,12 +552,15 @@ def compile_strongreject_results(
                 manifest=manifest,
             )
             if len(rows) < cfg.expected_target_rollouts:
+                present = {r["rollout_index"] for r in rows if r.get("rollout_index") is not None}
+                missing = sorted(set(range(cfg.expected_target_rollouts)) - present)
                 manifest["coverage_warnings"].append(
                     {
                         "condition": condition,
                         "target_prompt_index": target_prompt_index,
                         "expected_scored": cfg.expected_target_rollouts,
                         "actual_scored": len(rows),
+                        "missing_rollout_indices": missing,
                         "path": str(path),
                     }
                 )
@@ -636,6 +640,7 @@ def compile_strongreject_results(
                     "probe_name": row["probe_name"],
                     "expected_scored": cfg.expected_oracle_rollouts,
                     "actual_scored": row["n_scored"],
+                    "missing_rollout_indices": sorted(set(range(cfg.expected_oracle_rollouts)) - set(row["oracle_rollout_indices"])),
                 }
             )
     summary_rows = _summary_rows(prompt_rows, cfg.thresholds)
@@ -695,7 +700,7 @@ def _parse_csv_strings(raw: str) -> tuple[str, ...]:
 def parse_args() -> StrongRejectCompileConfig:
     parser = argparse.ArgumentParser(description="Compile workflow-traced StrongReject experiment results.")
     parser.add_argument("--cache-root", default="cache")
-    parser.add_argument("--output-dir", default="compiled_strongreject_results")
+    parser.add_argument("--output-dir", default="results/compiled_strongreject_results")
     parser.add_argument("--judge-instruction-path", default="strongReject_v5.jinja2")
     parser.add_argument("--target-model-name", default="Qwen/Qwen3-8B")
     parser.add_argument("--judge-model-name", default="Qwen/Qwen3-8B")
