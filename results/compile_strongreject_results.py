@@ -350,6 +350,7 @@ def _prompt_level_rows(detail_rows: list[dict[str, Any]], thresholds: tuple[floa
             "oracle_rollout_indices": sorted({r["oracle_rollout_index"] for r in rows if r.get("oracle_rollout_index") is not None}),
             "mean_score": _round(_mean(scores)),
             "sd_score_within_prompt": _round(_sample_sd(scores)),
+            "cache_path": rows[0].get("cache_path"),
         }
         for threshold in thresholds:
             label = _threshold_label(threshold)
@@ -641,6 +642,7 @@ def compile_strongreject_results(
                     "expected_scored": cfg.expected_oracle_rollouts,
                     "actual_scored": row["n_scored"],
                     "missing_rollout_indices": sorted(set(range(cfg.expected_oracle_rollouts)) - set(row["oracle_rollout_indices"])),
+                    "path": row.get("cache_path"),
                 }
             )
     summary_rows = _summary_rows(prompt_rows, cfg.thresholds)

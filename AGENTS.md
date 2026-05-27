@@ -130,13 +130,13 @@ Both repos should be cloned with exact names. The activation_oracles repo is imp
 ### Run Tests
 ```bash
 # From repo root, run all tests
-PYTHONPATH="activation_oracles_extensions" python -m unittest discover -v -s "activation_oracles_extensions/tests"
+PYTHONPATH="activation_oracles_extensions:activation_oracles_extensions/results" python -m unittest discover -v -s "activation_oracles_extensions/tests"
 
 # Run a specific test file
-PYTHONPATH="activation_oracles_extensions" python -m unittest activation_oracles_extensions.tests.test_prompt_utils -v
+PYTHONPATH="activation_oracles_extensions:activation_oracles_extensions/results" python -m unittest activation_oracles_extensions.tests.test_prompt_utils -v
 
 # Run a specific test class or method
-PYTHONPATH="activation_oracles_extensions" python -m unittest activation_oracles_extensions.tests.test_prompt_utils.PromptUtilsTests.test_prompt_key_hash_length -v
+PYTHONPATH="activation_oracles_extensions:activation_oracles_extensions/results" python -m unittest activation_oracles_extensions.tests.test_prompt_utils.PromptUtilsTests.test_prompt_key_hash_length -v
 ```
 
 ### Bash Script Syntax Check

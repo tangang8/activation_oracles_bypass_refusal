@@ -32,6 +32,92 @@ def build_coverage_df(manifest: dict) -> pd.DataFrame:
     return df
 
 
+def _get_compliance_leaf(entry: dict, probe_kind: str | None, probe_name: str | None):
+    compliance = entry.get('compliance')
+    if not isinstance(compliance, dict):
+        return None
+    if probe_kind in ('tokens', 'token_points'):
+        container = compliance.get(probe_kind, {})
+        return container.get(probe_name) if isinstance(container, dict) else None
+    if probe_kind:
+        return compliance.get(probe_kind)
+    return compliance
+
+
+def _leaf_skip_reason(leaf, judge_instruction_stem: str | None) -> str:
+    if not isinstance(leaf, dict):
+        return 'compliance leaf missing or not a dict'
+    score = leaf.get('score')
+    if score is None:
+        return leaf.get('reason') or 'score is null'
+    try:
+        v = float(score)
+    except (TypeError, ValueError):
+        return f'score not numeric: {score!r}'
+    scale = leaf.get('score_scale')
+    if scale is not None and scale != 'strongreject_0_1':
+        return f'unexpected score_scale={scale!r}'
+    if v < 0.0 or v > 1.0:
+        return f'score outside [0, 1]: {v}'
+    instr = str(leaf.get('judge_instruction_file', ''))
+    if instr and judge_instruction_stem and Path(instr).stem != judge_instruction_stem:
+        return f'wrong judge_instruction_file={Path(instr).name!r}'
+    return 'score valid (unexpected)'
+
+
+def _reasons_for_missing_indices(
+    path: str,
+    missing_indices: list,
+    probe_kind: str | None,
+    probe_name: str | None,
+    judge_instruction_stem: str | None,
+) -> str:
+    try:
+        entries = load_cache_entries(path)
+    except Exception as exc:
+        return f'error reading cache: {exc}'
+    index_to_entry = {}
+    for e in entries:
+        idx = e.get('rollout_index') if e.get('rollout_index') is not None else e.get('oracle_rollout_index')
+        if idx is not None:
+            index_to_entry[idx] = e
+    parts = []
+    for idx in sorted(missing_indices):
+        if idx not in index_to_entry:
+            parts.append(f'idx {idx}: entry absent')
+        else:
+            leaf = _get_compliance_leaf(index_to_entry[idx], probe_kind, probe_name)
+            parts.append(f'idx {idx}: {_leaf_skip_reason(leaf, judge_instruction_stem)}')
+    return '; '.join(parts) if parts else 'unknown'
+
+
+def _coverage_warning_reason(
+    row: dict,
+    missing_set: set,
+    skipped_by_path: dict,
+    judge_instruction_stem: str | None = None,
+) -> str:
+    """Derive a human-readable reason for a coverage warning row."""
+    if row.get('reason'):
+        return str(row['reason'])
+    path = str(row.get('path', ''))
+    if path and path in missing_set:
+        return 'file missing'
+    missing_indices = row.get('missing_rollout_indices') or []
+    if path and missing_indices:
+        return _reasons_for_missing_indices(
+            path, missing_indices,
+            row.get('probe_kind'), row.get('probe_name'),
+            judge_instruction_stem,
+        )
+    if path:
+        leaves = skipped_by_path.get(path, [])
+        if leaves:
+            unique = list(dict.fromkeys(leaf['reason'] for leaf in leaves))
+            return 'skipped score leaves: ' + '; '.join(unique)
+    return 'rollouts not generated or not scored'
+
+
 def display_coverage_report(manifest: dict, cfg) -> PathAliaser:
     """Print and display the full coverage validation report for a compiled manifest.
 
@@ -53,8 +139,18 @@ def display_coverage_report(manifest: dict, cfg) -> PathAliaser:
     )
     prompt_by_index = {cfg.target_prompt_offset + i: p for i, p in enumerate(target_prompts)}
 
+    missing_set = set(manifest.get('missing_files', []))
+    skipped_by_path: dict = {}
+    for leaf in manifest.get('skipped_score_leaves', []):
+        skipped_by_path.setdefault(leaf['path'], []).append(leaf)
+
     warnings_df = pd.DataFrame(manifest.get('coverage_warnings', []))
     if not warnings_df.empty:
+        judge_stem = getattr(cfg, 'judge_instruction_stem', None)
+        warnings_df['skip_reason'] = warnings_df.apply(
+            lambda row: _coverage_warning_reason(row.to_dict(), missing_set, skipped_by_path, judge_stem),
+            axis=1,
+        )
         if 'target_prompt_index' in warnings_df.columns:
             warnings_df.insert(
                 warnings_df.columns.get_loc('target_prompt_index') + 1,

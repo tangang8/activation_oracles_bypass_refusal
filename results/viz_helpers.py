@@ -135,11 +135,22 @@ def _heatmap_cell_styles(
     score_cols: list[str],
     uncertainty_cols: list[str],
     alpha: float = _HEATMAP_ALPHA,
+    relative_score_norm: bool = False,
 ) -> pd.DataFrame:
     """Return a same-shape DataFrame of CSS strings with per-cell background + contrasting text."""
     score_cmap = plt.get_cmap('YlGn')
     unc_cmap = plt.get_cmap('YlOrRd')
-    score_norm = mcolors.Normalize(vmin=0.0, vmax=1.0)
+    if relative_score_norm:
+        all_vals = np.concatenate([
+            df[c].dropna().to_numpy(dtype=float) for c in score_cols if c in df.columns
+        ]) if score_cols else np.array([])
+        finite = all_vals[np.isfinite(all_vals)] if all_vals.size else np.array([])
+        score_norm = mcolors.Normalize(
+            vmin=float(finite.min()) if finite.size else 0.0,
+            vmax=float(finite.max()) if finite.size else 1.0,
+        )
+    else:
+        score_norm = mcolors.Normalize(vmin=0.0, vmax=1.0)
 
     unc_vals = np.concatenate([
         df[c].dropna().to_numpy(dtype=float) for c in uncertainty_cols if c in df.columns
@@ -178,11 +189,11 @@ def _heatmap_cell_styles(
     return out
 
 
-def percent_style(df: pd.DataFrame, extra_pct_cols=None):
+def percent_style(df: pd.DataFrame, extra_pct_cols=None, relative_score_norm: bool = False):
     pct_cols = [c for c in df.columns if c in SCORE_COLS or c.startswith('asr_')]
     pretty_pct_cols = [
         c for c in df.columns
-        if c in _SCORE_LIKE_COLS or c in _UNCERTAINTY_LIKE_COLS or c.startswith('ASR') or c.startswith('SE Within')
+        if c in _SCORE_LIKE_COLS or c in _UNCERTAINTY_LIKE_COLS or c.startswith('ASR')
     ]
     if extra_pct_cols:
         pct_cols = sorted(set(pct_cols) | set(extra_pct_cols))
@@ -192,12 +203,10 @@ def percent_style(df: pd.DataFrame, extra_pct_cols=None):
     styler = df.style.format(fmt, na_rep='—')
 
     score_cols = [c for c in _SCORE_LIKE_COLS if c in df.columns]
-    uncertainty_cols = [c for c in _UNCERTAINTY_LIKE_COLS if c in df.columns] + [
-        c for c in df.columns if c.startswith('SE Within') and c not in _UNCERTAINTY_LIKE_COLS
-    ]
+    uncertainty_cols = [c for c in _UNCERTAINTY_LIKE_COLS if c in df.columns]
     if score_cols or uncertainty_cols:
         styler = styler.apply(
-            lambda d: _heatmap_cell_styles(d, score_cols, uncertainty_cols),
+            lambda d: _heatmap_cell_styles(d, score_cols, uncertainty_cols, relative_score_norm=relative_score_norm),
             axis=None,
         )
 
@@ -338,6 +347,24 @@ def apply_probe_sort(df: pd.DataFrame, probe_order: dict | None = None) -> pd.Da
     sort_cols.extend(['_probe_rank', '_probe_name_sort'])
     out = out.sort_values(sort_cols)
     return out.drop(columns=['_probe_rank', '_probe_name_sort'])
+
+
+def build_provenance(details: pd.DataFrame, path_aliaser: PathAliaser, probe_order: dict) -> pd.DataFrame:
+    """Aggregate details into a per-condition/probe provenance table, ready for display."""
+    prov = (
+        details
+        .groupby(['condition', 'preset_source', 'oracle_prompt_file', 'probe_kind', 'probe_name'], dropna=False)
+        .agg(
+            n_rows=('score', 'size'),
+            n_target_prompts=('target_prompt_key', 'nunique'),
+            n_cache_files=('cache_path', 'nunique'),
+            mean_score=('score', 'mean'),
+        )
+        .reset_index()
+    )
+    prov = path_aliaser.add_alias_column(prov, 'oracle_prompt_file', 'oracle_prompt_file_alias')
+    prov = apply_probe_sort(prov, probe_order)
+    return apply_display_transforms(prov)
 
 
 def plot_summary(summary: pd.DataFrame, manifest: dict, top_n: int = 30) -> None:
