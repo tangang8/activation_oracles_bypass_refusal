@@ -646,6 +646,27 @@ def _apply_table_styles(styler):
     ], overwrite=True)
 
 
+def save_styler_png(styler, path: Path | str) -> Path:
+    """Save a pandas Styler as a PNG figure using dataframe_image (playwright/chromium).
+
+    Creates parent directories as needed. Returns the resolved output path.
+    """
+    import glob
+    import dataframe_image as dfi
+
+    out_path = Path(path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # 'chrome' shells out to a chromium subprocess, which works inside Jupyter's
+    # asyncio loop where the 'playwright' sync API errors out. Reuse the chromium
+    # that `playwright install chromium` placed under ~/.cache/ms-playwright.
+    chrome_candidates = sorted(glob.glob(
+        str(Path.home() / '.cache/ms-playwright/chromium-*/chrome-linux64/chrome')
+    ))
+    chrome_path = chrome_candidates[-1] if chrome_candidates else None
+    dfi.export(styler, str(out_path), table_conversion='chrome', chrome_path=chrome_path)
+    return out_path
+
+
 def clip_text(value, n: int | None = 180):
     if pd.isna(value):
         return value
