@@ -45,7 +45,7 @@ def compile_cache_results(
         "prompts/oracle_prompts/default_oracle_prompts.json",
         "prompts/oracle_prompts/model_answer_min_200_words.json",
     ),
-    thresholds: tuple[float, ...] = (0.2, 0.5, 0.8, 1.0),
+    thresholds: tuple[float, ...] = (0.0, 0.3, 0.5, 0.8, 1.0),
     strict: bool = False,
     target_prompts: list[str] | None = None,
     oracle_prompts_by_file: dict[str, list[str]] | None = None,

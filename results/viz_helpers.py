@@ -28,8 +28,8 @@ def condition_rank(value) -> float:
     return CONDITION_ORDER.get(value, 1e9)
 
 SCORE_COLS = {
-    'mean_score', 'se_score', 'asr_0_2', 'asr_0_2_se', 'asr_0_5', 'asr_0_5_se',
-    'asr_0_8', 'asr_0_8_se', 'asr_1', 'asr_1_se',
+    'mean_score', 'se_score', 'asr_0', 'asr_0_se', 'asr_0_3', 'asr_0_3_se',
+    'asr_0_5', 'asr_0_5_se', 'asr_0_8', 'asr_0_8_se', 'asr_1', 'asr_1_se',
     'sd_within_prompt_oracle_rollouts', 'sd_within_prompt_target_rollouts',
     'mean_within_prompt_sd_oracle_rollouts', 'mean_within_prompt_sd_target_rollouts',
     'score',
@@ -196,17 +196,20 @@ class PathAliaser:
 
 
 _SCORE_LIKE_COLS = {
-    'mean_score', 'score', 'asr_0_2', 'asr_0_5', 'asr_0_8', 'asr_1',
-    'Mean Score', 'Score', 'ASR >= 0.2', 'ASR >= 0.5', 'ASR >= 0.8', 'ASR = 1.0',
+    'mean_score', 'score', 'asr_0', 'asr_0_3', 'asr_0_5', 'asr_0_8', 'asr_1',
+    'Mean Score', 'Score',
+    'ASR Threshold: >0', 'ASR Threshold: >= 0.3', 'ASR Threshold: >= 0.5',
+    'ASR Threshold: >= 0.8', 'ASR Threshold: = 1.0',
 }
 _UNCERTAINTY_LIKE_COLS = {
-    'se_score', 'asr_0_2_se', 'asr_0_5_se', 'asr_0_8_se', 'asr_1_se',
+    'se_score', 'asr_0_se', 'asr_0_3_se', 'asr_0_5_se', 'asr_0_8_se', 'asr_1_se',
     'sd_within_prompt_oracle_rollouts', 'sd_within_prompt_target_rollouts',
     'mean_within_prompt_sd_oracle_rollouts', 'mean_within_prompt_sd_target_rollouts',
     'SE Across Prompts',
     'Within-Prompt Std across Oracle Rollouts', 'Within-Prompt Std across Target Rollouts',
-    'ASR >= 0.2 SE Across Prompts', 'ASR >= 0.5 SE Across Prompts',
-    'ASR >= 0.8 SE Across Prompts', 'ASR = 1.0 SE Across Prompts',
+    'ASR Threshold: >0 SE Across Prompts', 'ASR Threshold: >= 0.3 SE Across Prompts',
+    'ASR Threshold: >= 0.5 SE Across Prompts', 'ASR Threshold: >= 0.8 SE Across Prompts',
+    'ASR Threshold: = 1.0 SE Across Prompts',
 }
 
 _HEATMAP_ALPHA = 0.88
@@ -475,10 +478,11 @@ def render_asr_table(df: pd.DataFrame):
     src = df.reset_index(drop=True)
     keep = ['condition', 'probe_name', 'oracle_prompt_file']
     asr_specs = [
-        ('asr_0_2', 'asr_0_2_se', 'ASR >= 0.2'),
-        ('asr_0_5', 'asr_0_5_se', 'ASR >= 0.5'),
-        ('asr_0_8', 'asr_0_8_se', 'ASR >= 0.8'),
-        ('asr_1',   'asr_1_se',   'ASR = 1.0'),
+        ('asr_0',   'asr_0_se',   'ASR Threshold: >0'),
+        ('asr_0_3', 'asr_0_3_se', 'ASR Threshold: >= 0.3'),
+        ('asr_0_5', 'asr_0_5_se', 'ASR Threshold: >= 0.5'),
+        ('asr_0_8', 'asr_0_8_se', 'ASR Threshold: >= 0.8'),
+        ('asr_1',   'asr_1_se',   'ASR Threshold: = 1.0'),
     ]
 
     display_df = src[keep].copy()
@@ -515,10 +519,11 @@ def render_baseline_table(df: pd.DataFrame):
     src = df.reset_index(drop=True)
     keep = ['condition', 'probe_name', 'oracle_prompt_file']
     asr_specs = [
-        ('asr_0_2', 'asr_0_2_se', 'ASR >= 0.2'),
-        ('asr_0_5', 'asr_0_5_se', 'ASR >= 0.5'),
-        ('asr_0_8', 'asr_0_8_se', 'ASR >= 0.8'),
-        ('asr_1',   'asr_1_se',   'ASR = 1.0'),
+        ('asr_0',   'asr_0_se',   'ASR Threshold: >0'),
+        ('asr_0_3', 'asr_0_3_se', 'ASR Threshold: >= 0.3'),
+        ('asr_0_5', 'asr_0_5_se', 'ASR Threshold: >= 0.5'),
+        ('asr_0_8', 'asr_0_8_se', 'ASR Threshold: >= 0.8'),
+        ('asr_1',   'asr_1_se',   'ASR Threshold: = 1.0'),
     ]
     mean_label = 'Mean Score'
     se_label = 'SE Across Prompts'
@@ -705,14 +710,16 @@ def rename_display_columns(df: pd.DataFrame) -> pd.DataFrame:
         'mean_score': 'Mean Score',
         'se_score': 'SE Across Prompts',
         'score': 'Score',
-        'asr_0_2': 'ASR >= 0.2',
-        'asr_0_2_se': 'ASR >= 0.2 SE Across Prompts',
-        'asr_0_5': 'ASR >= 0.5',
-        'asr_0_5_se': 'ASR >= 0.5 SE Across Prompts',
-        'asr_0_8': 'ASR >= 0.8',
-        'asr_0_8_se': 'ASR >= 0.8 SE Across Prompts',
-        'asr_1': 'ASR = 1.0',
-        'asr_1_se': 'ASR = 1.0 SE Across Prompts',
+        'asr_0': 'ASR Threshold: >0',
+        'asr_0_se': 'ASR Threshold: >0 SE Across Prompts',
+        'asr_0_3': 'ASR Threshold: >= 0.3',
+        'asr_0_3_se': 'ASR Threshold: >= 0.3 SE Across Prompts',
+        'asr_0_5': 'ASR Threshold: >= 0.5',
+        'asr_0_5_se': 'ASR Threshold: >= 0.5 SE Across Prompts',
+        'asr_0_8': 'ASR Threshold: >= 0.8',
+        'asr_0_8_se': 'ASR Threshold: >= 0.8 SE Across Prompts',
+        'asr_1': 'ASR Threshold: = 1.0',
+        'asr_1_se': 'ASR Threshold: = 1.0 SE Across Prompts',
         'n_prompts_with_sd': 'Prompts With Within-Prompt SD',
         'sd_within_prompt_oracle_rollouts': 'Within-Prompt Std across Oracle Rollouts',
         'sd_within_prompt_target_rollouts': 'Within-Prompt Std across Target Rollouts',
