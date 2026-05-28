@@ -1,71 +1,114 @@
 from __future__ import annotations
 
+import csv
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
-try:
-    import report_pages
-except Exception:
-    report_pages = None
+import report_pages
 
 
-class _FakeTokenizer:
-    class _Ids(list):
-        def tolist(self):
-            return list(self)
-
-    def __call__(self, input_text, return_tensors, add_special_tokens, padding):
-        del input_text, return_tensors, add_special_tokens, padding
-        return {"input_ids": [self._Ids([1, 2, 3])]}
-
-    def decode(self, token_ids):
-        return f"tok{token_ids[0]}"
-
-
-@unittest.skipIf(report_pages is None, "report_pages dependencies unavailable")
 class ReportPagesTests(unittest.TestCase):
-    def test_entry_rollout_label(self) -> None:
-        self.assertEqual(report_pages._entry_rollout_label({"rollout_index": 1}, 9), "1")
-        self.assertEqual(report_pages._entry_rollout_label({"oracle_rollout_index": 2}, 9), "2")
-        self.assertEqual(report_pages._entry_rollout_label({}, 9), "9")
+    def _write_csv(self, path: Path, rows: list[dict[str, object]]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not rows:
+            path.write_text("", encoding="utf-8")
+            return
+        with path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(rows)
 
-    def test_save_rollouts_html(self) -> None:
+    def test_save_strongreject_website(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            out = report_pages.save_rollouts_html(
-                rollout_entries=[
-                    {"rollout_index": 0, "compliance": {"score": 1, "reason": "r"}, "target_format": {"response_only": "x", "thinking": ""}}
-                ],
-                compliance_results={"compliance_rate": 0.1, "partial_compliance_rate": 0.2, "total": 1},
-                output_path=str(Path(td) / "rollouts.html"),
-            )
-            self.assertTrue(out.exists())
-            text = out.read_text(encoding="utf-8")
-            self.assertIn("Rollouts Report", text)
-            self.assertIn("Rollout 0", text)
+            root = Path(td)
+            compiled = root / "compiled"
+            website = root / "website"
 
-    def test_save_oracle_rollouts_html_prompt_only_schema(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            out = report_pages.save_oracle_rollouts_html(
-                oracle_results=[
+            self._write_csv(
+                compiled / "strongreject_summary.csv",
+                [
                     {
-                        "oracle_rollout_index": 0,
-                        "formatted_target_prompt": "fp",
-                        "oracle_response": {"full_seq": "x", "token_points": {"last_prompt_token": "y"}},
-                        "oracle_format": {"full_seq": {"response_only": "x"}, "token_points": {"last_prompt_token": {"response_only": "y"}}},
-                        "oracle_points": {"combined_text": "fp", "token_points": {"last_prompt_token": 1}},
-                        "compliance": {},
+                        "condition": "target_rollout_oracle",
+                        "probe_name": "rollout_segment",
+                        "oracle_prompt_file": "prompts/oracle_prompts/default_oracle_prompts.json",
+                        "n_prompts": 1,
+                        "mean_score": 0.8,
+                        "se_score": 0.0,
+                        "asr_0_2": 1.0,
+                        "asr_0_2_se": 0.0,
+                        "asr_0_5": 1.0,
+                        "asr_0_5_se": 0.0,
+                        "asr_0_8": 1.0,
+                        "asr_0_8_se": 0.0,
+                        "asr_1": 0.0,
+                        "asr_1_se": 0.0,
                     }
                 ],
-                oracle_prompt="oracle",
-                tokenizer=_FakeTokenizer(),
-                output_path=str(Path(td) / "oracle.html"),
             )
+            self._write_csv(
+                compiled / "strongreject_reliability.csv",
+                [
+                    {
+                        "condition": "target_rollout_oracle",
+                        "probe_name": "rollout_segment",
+                        "oracle_prompt_file": "prompts/oracle_prompts/default_oracle_prompts.json",
+                        "n_prompts_with_sd": 1,
+                        "mean_within_prompt_sd_oracle_rollouts": "",
+                        "mean_within_prompt_sd_target_rollouts": 0.1,
+                        "mean_within_prompt_n": 2,
+                    }
+                ],
+            )
+            self._write_csv(
+                compiled / "strongreject_details.csv",
+                [
+                    {
+                        "condition": "target_rollout_oracle",
+                        "target_prompt_index": 0,
+                        "probe_name": "rollout_segment",
+                        "oracle_prompt_file": "prompts/oracle_prompts/default_oracle_prompts.json",
+                        "target_rollout_index": 0,
+                        "oracle_rollout_index": 0,
+                        "score": 0.8,
+                        "target_prompt": "harmful prompt",
+                        "cache_path": "/tmp/cache/file.json",
+                    }
+                ],
+            )
+            (compiled / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "detail_row_count": 1,
+                        "prompt_level_row_count": 1,
+                        "summary_row_count": 1,
+                        "reliability_row_count": 1,
+                        "missing_files": [],
+                        "malformed_files": [],
+                        "skipped_score_leaves": [],
+                        "coverage_warnings": [],
+                        "outputs": {
+                            "summary_csv": str(compiled / "strongreject_summary.csv"),
+                            "details_csv": str(compiled / "strongreject_details.csv"),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            out = report_pages.save_strongreject_website(compiled_dir=compiled, output_dir=website)
             self.assertTrue(out.exists())
-            html = out.read_text(encoding="utf-8")
-            self.assertIn("Oracle Rollouts Report", html)
-            self.assertIn("Formatted Target Prompt", html)
-            self.assertIn("last_prompt_token", html)
+            text = out.read_text(encoding="utf-8")
+            self.assertIn("StrongReject Results", text)
+            self.assertIn("Target Rollout Oracle", text)
+            self.assertIn("Oracle Prompt A", text)
+            self.assertIn("80.0%", text)
+
+    def test_missing_compiled_outputs_raise(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(FileNotFoundError):
+                report_pages.save_strongreject_website(compiled_dir=Path(td) / "missing", output_dir=Path(td) / "site")
 
 
 if __name__ == "__main__":

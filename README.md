@@ -772,10 +772,16 @@ HTML reports are intentionally separate from experiment execution.
 Use:
 
 ```bash
-python generate_reports.py --cache-path <cache-json> --report-type auto
+python generate_reports.py
 ```
 
-`generate_reports.py` infers target vs oracle report types from cache paths and payload schemas. It writes reports under `website/` by default. The experiment pipeline itself does not generate HTML reports.
+`generate_reports.py` reads the StrongReject compiler outputs under `results/compiled_strongreject_results/` and writes `website/index.html`. It no longer renders arbitrary target/oracle cache JSON files; the reporting path is StrongReject-only and uses the workflow-traced aggregation outputs. To compile first and then render the website in one command:
+
+```bash
+python generate_reports.py --compile-first
+```
+
+The experiment pipeline itself does not generate HTML reports.
 
 ## W&B Logging
 

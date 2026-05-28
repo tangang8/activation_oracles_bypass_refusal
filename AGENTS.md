@@ -122,8 +122,9 @@ Both repos should be cloned with exact names. The activation_oracles repo is imp
 - **distributed_utils.py**: Distributed (multi-GPU) support via torch.distributed; broadcast/gather across ranks.
 
 ### Compilation & Reporting
-- **compile_strongreject_results.py**: Aggregates judge outputs into structured JSON for later analysis.
-- **report_pages.py** & **generate_reports.py**: HTML report generation from compiled results.
+- **results/compile_strongreject_results.py**: Workflow-traced StrongReject compiler. This is the source of truth for aggregation.
+- **compile_results.py**: Compatibility wrapper that delegates to the StrongReject compiler; it no longer scans arbitrary cache files.
+- **report_pages.py** & **generate_reports.py**: StrongReject-only static website generation from compiled CSV/manifest outputs.
 
 ## Key Commands
 
