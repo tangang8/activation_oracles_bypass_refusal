@@ -9,7 +9,7 @@ At a high level, the code does four things:
 3. Extract activations from either the user prompt or target rollouts, feed those activations into an oracle model, and generate oracle responses.
 4. Judge the oracle responses and compile StrongReject results with prompt-level statistics.
 
-The main pipeline is intentionally cache-heavy. Each stage writes JSON cache files keyed by model, adapter, temperature, judge prompt, target prompt, oracle prompt, and relevant probe/variant settings. This makes long runs resumable and allows downstream aggregation to trace exactly which workflow-generated files should exist.
+The main pipeline is intentionally cache-heavy. Each stage writes JSON cache files keyed by model, adapter, temperature, judge prompt, target prompt, oracle prompt, and relevant activation-slice/variant settings. This makes long runs resumable and allows downstream aggregation to trace exactly which workflow-generated files should exist.
 
 ## Experimental Design
 
@@ -24,9 +24,9 @@ The main suite has four conditions:
 | Target Baseline | Establish that the base model refuses harmful requests. | Base model rollouts at temperature 1, judged directly. Expected score near 0. | `./run_oracle_experiment.sh --preset target_judging_only --target-prompt-limit 100 --num-rollouts 50 --judge-instruction-path strongReject_v5.jinja2 --judge-thinking off` |
 | Oracle Control Baseline | Check that loading the oracle LoRA does not itself break safety. | Same direct harmful prompts, but with the oracle adapter selected as the target adapter and target thinking off. | `./run_oracle_experiment.sh --preset oracle_target_control --target-prompt-limit 100 --num-rollouts 50 --judge-instruction-path strongReject_v5.jinja2 --judge-thinking off` |
 | User Prompt Oracle | Primary prompt-only extraction test. | The oracle receives activations from the formatted user prompt only, sampled at temperature 1 across oracle repeats. This tests whether harmful-answer content is already extractable while processing the request. | `./run_oracle_experiment.sh --preset prompt_only_oracle --target-prompt-limit 100 --num-oracle-rollouts 50 --judge-instruction-path strongReject_v5.jinja2 --judge-thinking off` |
-| Target Rollout Oracle | Tests what remains extractable after the model has begun/refused a response. | The oracle reads activations from each target rollout's rollout segment and post-prompt token points only, using one deterministic oracle response per target rollout × probe. | `./run_oracle_experiment.sh --preset rollout_post_prompt_oracle --target-prompt-limit 100 --num-rollouts 50 --judge-instruction-path strongReject_v5.jinja2 --judge-thinking off` |
+| Target Rollout Oracle | Tests what remains extractable after the model has begun/refused a response. | The oracle reads activations from each target rollout's rollout segment and post-prompt token points only, using one deterministic oracle response per target rollout × activation slice. | `./run_oracle_experiment.sh --preset rollout_post_prompt_oracle --target-prompt-limit 100 --num-rollouts 50 --judge-instruction-path strongReject_v5.jinja2 --judge-thinking off` |
 
-The default full suite uses 100 target prompts, 50 target rollouts per prompt, two oracle prompt files, and ASR thresholds at `0.2`, `0.5`, `0.8`, and `1.0`. Oracle Prompt A is `default_oracle_prompts.json`; Oracle Prompt B is `model_answer_min_200_words.json`. The prompt-only oracle condition uses `full_seq` plus Qwen prompt token points. The rollout oracle condition uses `rollout_segment` plus Qwen post-prompt rollout token points; for each target rollout and probe, it generates one deterministic oracle response at temperature 0.
+The default full suite uses 100 target prompts, 50 target rollouts per prompt, two oracle prompt files, and ASR thresholds at `0.2`, `0.5`, `0.8`, and `1.0`. Oracle Prompt A is `default_oracle_prompts.json`; Oracle Prompt B is `model_answer_min_200_words.json`. The prompt-only oracle condition uses `full_seq` plus Qwen prompt token points. The rollout oracle condition uses `rollout_segment` plus Qwen post-prompt rollout token points; for each target rollout and activation slice, it generates one deterministic oracle response at temperature 0.
 
 For a complete run on multiple GPUs, use the scheduler:
 
@@ -161,7 +161,7 @@ Common StrongReject settings:
 | `NUM_ORACLE_ROLLOUTS` | Number of sampled oracle repeats for prompt-only or sampled target modes. |
 | `MAX_NEW_TOKENS` | Target rollout generation cap. |
 | `ORACLE_MAX_NEW_TOKENS` | Oracle response generation cap. |
-| `ORACLE_INPUT_TYPES` | Optional probe list such as `full_seq,token_points`. Empty means mode defaults. |
+| `ORACLE_INPUT_TYPES` | Optional activation-slice list such as `full_seq,token_points`. Empty means mode defaults. |
 | `ORACLE_TOKEN_POINT_FILTER` | `all` or `post_prompt`; `post_prompt` keeps only token points after the prompt boundary. |
 | `JUDGE_THINKING` | `default` or `off`; StrongReject runs normally use `off`. |
 | `TARGET_THINKING` | `default` or `off`; oracle control uses `off` for coherent direct responses. |
@@ -214,7 +214,7 @@ Default structure:
 - oracle rollout mode: `prompt_only_repeats`
 - oracle generation: temperature 1
 - oracle repeats: `NUM_ORACLE_ROLLOUTS`
-- default probes: `full_seq` and `token_points`
+- default activation slices: `full_seq` and `token_points`
 
 Prompt-only mode deliberately avoids `prompt_segment`; for prompt-only inputs it duplicates the full prompt sequence and wastes compute.
 
@@ -229,21 +229,21 @@ Default structure:
 - target rollouts: `NUM_ROLLOUTS` target rollouts per prompt, usually 50 to match the target baseline
 - oracle rollout mode: `all_target_deterministic`
 - oracle generation: temperature 0
-- oracle repeats: always one deterministic oracle response per target rollout × probe
+- oracle repeats: always one deterministic oracle response per target rollout × activation slice
 - `K_ROLLOUTS` defaults to `NUM_ROLLOUTS`
-- probes: `rollout_segment,token_points`
+- activation slices: `rollout_segment,token_points`
 - token point filter: `post_prompt`
 
 ### `full_deterministic_oracle`
 
-Runs target rollouts, target judging, deterministic oracle generation, and oracle judging over the broader default probe set.
+Runs target rollouts, target judging, deterministic oracle generation, and oracle judging over the broader default activation-slice set.
 
 Default structure:
 
 - oracle rollout mode: `all_target_deterministic`
 - oracle generation: temperature 0
 - `K_ROLLOUTS` defaults to `NUM_ROLLOUTS`
-- default target-backed probes: `full_seq`, `prompt_segment`, `rollout_segment`, `token_points`
+- default target-backed activation slices: `full_seq`, `prompt_segment`, `rollout_segment`, `token_points`
 
 ### `sampled_target_repeats`
 
@@ -315,7 +315,7 @@ The result is stored with `score_scale = "strongreject_0_1"`. Scores are therefo
 
 Malformed judge outputs are not treated as valid scores. The judge code retries malformed thinking-tag failures with larger `max_new_tokens`, and records invalid-format payloads when validation still fails.
 
-## Oracle Probes and Activation Extraction
+## Oracle Activation Slices and Activation Extraction
 
 The activation-oracle core is in `oracle_pipeline.py`. It imports upstream helpers from the sibling `activation_oracles` repo:
 
@@ -332,14 +332,14 @@ The oracle pipeline works like this:
    - target-backed: formatted prompt + target response
 2. Compute token boundary metadata.
 3. Extract activations at the configured layer percentage.
-4. Slice activations into requested probes.
+4. Slice activations into requested activation slices.
 5. Wrap each activation slice into an upstream oracle evaluation datapoint.
 6. Run the oracle LoRA through `run_evaluation`.
-7. Reassemble outputs by target, repeat, and probe.
+7. Reassemble outputs by target, repeat, and activation slice.
 
-Supported probe types:
+Supported activation slice types:
 
-| Probe | Meaning |
+| Activation Slice | Meaning |
 |---|---|
 | `full_seq` | Activations from the full input sequence. |
 | `segment` | A configurable contiguous token segment. |
@@ -378,7 +378,7 @@ tokenizer(formatted_prompt + response) starts with tokenizer(formatted_prompt)
 
 If that boundary is unstable, the pipeline raises a `ValueError` instead of silently computing wrong prompt/rollout spans.
 
-`ORACLE_TOKEN_POINT_FILTER=post_prompt` keeps only token points whose token index is after the prompt boundary. This is used by `rollout_post_prompt_oracle` so the rollout oracle condition does not duplicate prompt-only probes.
+`ORACLE_TOKEN_POINT_FILTER=post_prompt` keeps only token points whose token index is after the prompt boundary. This is used by `rollout_post_prompt_oracle` so the rollout oracle condition does not duplicate prompt-only activation slices.
 
 ## Oracle Rollout Modes
 
@@ -388,7 +388,7 @@ If that boundary is unstable, the pipeline raises a `ValueError` instead of sile
 
 Input source: formatted target prompt only.
 
-Default probes:
+Default activation slices:
 
 ```python
 ["full_seq", "token_points"]
@@ -400,21 +400,21 @@ The oracle is sampled at temperature 1 for `NUM_ORACLE_ROLLOUTS` repeats. Cache 
 
 Input source: target rollouts.
 
-Default probes:
+Default activation slices:
 
 ```python
 ["full_seq", "prompt_segment", "rollout_segment", "token_points"]
 ```
 
-The oracle runs greedily at temperature 0. `NUM_ORACLE_ROLLOUTS` is ignored because deterministic target-backed oracle runs produce one oracle output per selected target rollout × probe. `K_ROLLOUTS`, when set, selects the first `K` target rollouts by `rollout_index`; in the main Exp 4 design, `K_ROLLOUTS` defaults to `NUM_ROLLOUTS`, so all generated target rollouts are used.
+The oracle runs greedily at temperature 0. `NUM_ORACLE_ROLLOUTS` is ignored because deterministic target-backed oracle runs produce one oracle output per selected target rollout × activation slice. `K_ROLLOUTS`, when set, selects the first `K` target rollouts by `rollout_index`; in the main Exp 4 design, `K_ROLLOUTS` defaults to `NUM_ROLLOUTS`, so all generated target rollouts are used.
 
-Deterministic target-backed runs use an aggregate deterministic oracle cache as the source of truth and disable lower-level per-probe cache writes. This avoids duplicate cache layouts for the same deterministic generation.
+Deterministic target-backed runs use an aggregate deterministic oracle cache as the source of truth and disable lower-level per-activation-slice cache writes. This avoids duplicate cache layouts for the same deterministic generation.
 
 ### `sampled_target_repeats`
 
 Input source: selected target rollouts.
 
-Default probes:
+Default activation slices:
 
 ```python
 ["full_seq", "prompt_segment", "rollout_segment", "token_points"]
@@ -468,7 +468,7 @@ cache/
           {oracle_prompt_preview_hash}[__variant_hash].json
 ```
 
-The optional variant hash represents non-default probe settings such as:
+The optional variant hash represents non-default activation-slice settings such as:
 
 ```json
 {
@@ -555,7 +555,7 @@ The experiment design expects:
 
 - 100 target prompts,
 - 50 target rollouts per prompt for baseline/control caches and target-rollout oracle extraction,
-- 50 oracle rollouts per prompt/probe for prompt-only oracle,
+- 50 oracle rollouts per prompt/activation slice for prompt-only oracle,
 - two oracle prompt files:
   - `prompts/oracle_prompts/default_oracle_prompts.json`
   - `prompts/oracle_prompts/model_answer_min_200_words.json`
@@ -652,7 +652,7 @@ results/compiled_strongreject_results/
 `strongreject_details.csv` contains one row per scored leaf:
 
 - target baseline/control: one row per target rollout,
-- oracle conditions: one row per scored probe leaf per oracle entry.
+- oracle conditions: one row per scored activation-slice leaf per oracle entry.
 
 Important columns include:
 
@@ -675,7 +675,7 @@ Important columns include:
 `strongreject_prompt_level.csv` groups detail rows by:
 
 ```text
-condition, target prompt, oracle prompt, probe kind, probe name
+condition, target prompt, oracle prompt, activation slice type/name (`probe_kind`, `probe_name`)
 ```
 
 It computes:
@@ -699,7 +699,7 @@ The within-prompt axis depends on condition:
 `strongreject_summary.csv` groups prompt-level rows by:
 
 ```text
-condition, oracle prompt, probe kind, probe name
+condition, oracle prompt, activation slice type/name (`probe_kind`, `probe_name`)
 ```
 
 It computes:
@@ -717,7 +717,7 @@ This matches the experiment design's key statistical rule: standard errors are a
 
 - `mean_within_prompt_sd_oracle_rollouts` for prompt-only oracle sampling variability,
 - `mean_within_prompt_sd_target_rollouts` when a condition has multiple scored target rollouts per prompt,
-- `mean_within_prompt_n`, the average number of scored rollout/probe observations per prompt.
+- `mean_within_prompt_n`, the average number of scored rollout/activation-slice observations per prompt.
 
 ### Manifest and Coverage Warnings
 
@@ -737,7 +737,7 @@ This matches the experiment design's key statistical rule: standard errors are a
 - score outside `[0, 1]`,
 - wrong judge instruction file.
 
-Missing or null probe scores generally surface through coverage warnings and reduced `n_scored`, not necessarily as skipped score leaves.
+Missing or null activation-slice scores generally surface through coverage warnings and reduced `n_scored`, not necessarily as skipped score leaves.
 
 ## Notebook Validation and Display
 
@@ -763,7 +763,7 @@ The notebook provides:
 - oracle prompt comparison tables,
 - StrongReject summary plots.
 
-The validation helpers can inspect why expected rows are missing by loading source cache files, checking specific rollout indices, and explaining whether a file is missing, a score leaf is invalid, or a rollout/probe is absent.
+The validation helpers can inspect why expected rows are missing by loading source cache files, checking specific rollout indices, and explaining whether a file is missing, a score leaf is invalid, or a rollout/activation slice is absent.
 
 ## HTML Reports
 
@@ -855,7 +855,7 @@ The experiment pipeline creates caches:
 target prompts
   -> target rollouts
   -> target judged rollouts
-  -> oracle activation probes
+  -> oracle activation slices
   -> oracle rollouts
   -> oracle judged rollouts
 ```

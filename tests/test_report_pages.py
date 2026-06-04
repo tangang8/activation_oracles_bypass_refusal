@@ -105,6 +105,10 @@ class ReportPagesTests(unittest.TestCase):
             self.assertIn("StrongReject Results", text)
             self.assertIn("Target Rollout Oracle", text)
             self.assertIn("Oracle Prompt A", text)
+            self.assertIn("Activation Slice Name", text)
+            self.assertIn("ASR, Threshold: &gt;= 0.5", text)
+            self.assertNotIn("Probe Name", text)
+            self.assertNotIn("ASR Threshold:", text)
             self.assertIn("80.0%", text)
 
     def test_missing_compiled_outputs_raise(self) -> None:

@@ -198,8 +198,8 @@ class PathAliaser:
 _SCORE_LIKE_COLS = {
     'mean_score', 'score', 'asr_0', 'asr_0_3', 'asr_0_5', 'asr_0_8', 'asr_1',
     'Mean Score', 'Score',
-    'ASR Threshold: >0', 'ASR Threshold: >= 0.3', 'ASR Threshold: >= 0.5',
-    'ASR Threshold: >= 0.8', 'ASR Threshold: = 1.0',
+    'ASR, Threshold: >0', 'ASR, Threshold: >= 0.3', 'ASR, Threshold: >= 0.5',
+    'ASR, Threshold: >= 0.8', 'ASR, Threshold: = 1.0',
 }
 _UNCERTAINTY_LIKE_COLS = {
     'se_score', 'asr_0_se', 'asr_0_3_se', 'asr_0_5_se', 'asr_0_8_se', 'asr_1_se',
@@ -207,9 +207,9 @@ _UNCERTAINTY_LIKE_COLS = {
     'mean_within_prompt_sd_oracle_rollouts', 'mean_within_prompt_sd_target_rollouts',
     'SE Across Prompts',
     'Within-Prompt Std across Oracle Rollouts', 'Within-Prompt Std across Target Rollouts',
-    'ASR Threshold: >0 SE Across Prompts', 'ASR Threshold: >= 0.3 SE Across Prompts',
-    'ASR Threshold: >= 0.5 SE Across Prompts', 'ASR Threshold: >= 0.8 SE Across Prompts',
-    'ASR Threshold: = 1.0 SE Across Prompts',
+    'ASR, Threshold: >0 SE Across Prompts', 'ASR, Threshold: >= 0.3 SE Across Prompts',
+    'ASR, Threshold: >= 0.5 SE Across Prompts', 'ASR, Threshold: >= 0.8 SE Across Prompts',
+    'ASR, Threshold: = 1.0 SE Across Prompts',
 }
 
 _HEATMAP_ALPHA = 0.88
@@ -415,7 +415,7 @@ def render_score_std_table(
 ):
     """Build a Score + uncertainty table from summary rows.
 
-    Columns: condition, probe_name, oracle_prompt_file,
+    Columns: condition, activation slice name, oracle_prompt_file,
         Mean Score                                        (green gradient on its own scale)
         SE Across Prompts                                 (one shared orange-red gradient)
         Within-Prompt Std across Oracle Rollouts          (shared orange-red gradient)
@@ -470,7 +470,7 @@ def render_score_std_table(
 
 
 def render_asr_table(df: pd.DataFrame):
-    """Build an ASR styled table (condition / probe / oracle_prompt_file / ASR thresholds).
+    """Build an ASR styled table (condition / activation slice / oracle_prompt_file / ASR thresholds).
 
     Each ASR column shows 'mean% ± SE%'. All ASR cells share a single green
     gradient computed over every ASR mean in the table.
@@ -478,11 +478,11 @@ def render_asr_table(df: pd.DataFrame):
     src = df.reset_index(drop=True)
     keep = ['condition', 'probe_name', 'oracle_prompt_file']
     asr_specs = [
-        ('asr_0',   'asr_0_se',   'ASR Threshold: >0'),
-        ('asr_0_3', 'asr_0_3_se', 'ASR Threshold: >= 0.3'),
-        ('asr_0_5', 'asr_0_5_se', 'ASR Threshold: >= 0.5'),
-        ('asr_0_8', 'asr_0_8_se', 'ASR Threshold: >= 0.8'),
-        ('asr_1',   'asr_1_se',   'ASR Threshold: = 1.0'),
+        ('asr_0',   'asr_0_se',   'ASR, Threshold: >0'),
+        ('asr_0_3', 'asr_0_3_se', 'ASR, Threshold: >= 0.3'),
+        ('asr_0_5', 'asr_0_5_se', 'ASR, Threshold: >= 0.5'),
+        ('asr_0_8', 'asr_0_8_se', 'ASR, Threshold: >= 0.8'),
+        ('asr_1',   'asr_1_se',   'ASR, Threshold: = 1.0'),
     ]
 
     display_df = src[keep].copy()
@@ -519,11 +519,11 @@ def render_baseline_table(df: pd.DataFrame):
     src = df.reset_index(drop=True)
     keep = ['condition', 'probe_name', 'oracle_prompt_file']
     asr_specs = [
-        ('asr_0',   'asr_0_se',   'ASR Threshold: >0'),
-        ('asr_0_3', 'asr_0_3_se', 'ASR Threshold: >= 0.3'),
-        ('asr_0_5', 'asr_0_5_se', 'ASR Threshold: >= 0.5'),
-        ('asr_0_8', 'asr_0_8_se', 'ASR Threshold: >= 0.8'),
-        ('asr_1',   'asr_1_se',   'ASR Threshold: = 1.0'),
+        ('asr_0',   'asr_0_se',   'ASR, Threshold: >0'),
+        ('asr_0_3', 'asr_0_3_se', 'ASR, Threshold: >= 0.3'),
+        ('asr_0_5', 'asr_0_5_se', 'ASR, Threshold: >= 0.5'),
+        ('asr_0_8', 'asr_0_8_se', 'ASR, Threshold: >= 0.8'),
+        ('asr_1',   'asr_1_se',   'ASR, Threshold: = 1.0'),
     ]
     mean_label = 'Mean Score'
     se_label = 'SE Across Prompts'
@@ -578,7 +578,7 @@ def render_oracle_prompt_comparison_table(df: pd.DataFrame, probe_order: dict | 
 
     Expects rows already filtered to a single condition. Pivots so each
     oracle_prompt_file becomes one column (labeled 'Oracle Prompt A' / 'B').
-    Rows are identified by (condition, probe_name) and ordered by `probe_order`
+    Rows are identified by (condition, activation slice name) and ordered by `probe_order`
     (token-stream rank) instead of alphabetical name.
     A single green gradient is applied across all mean values in the table.
     """
@@ -696,8 +696,8 @@ def rename_display_columns(df: pd.DataFrame) -> pd.DataFrame:
     pretty = {
         'condition': 'Condition',
         'preset_source': 'Preset Source',
-        'probe_kind': 'Probe Kind',
-        'probe_name': 'Probe Name',
+        'probe_kind': 'Activation Slice Type',
+        'probe_name': 'Activation Slice Name',
         'oracle_prompt_file': 'Oracle Prompt File',
         'target_prompt_index': 'Target Prompt Index',
         'rollout_index': 'Rollout Index',
@@ -710,16 +710,16 @@ def rename_display_columns(df: pd.DataFrame) -> pd.DataFrame:
         'mean_score': 'Mean Score',
         'se_score': 'SE Across Prompts',
         'score': 'Score',
-        'asr_0': 'ASR Threshold: >0',
-        'asr_0_se': 'ASR Threshold: >0 SE Across Prompts',
-        'asr_0_3': 'ASR Threshold: >= 0.3',
-        'asr_0_3_se': 'ASR Threshold: >= 0.3 SE Across Prompts',
-        'asr_0_5': 'ASR Threshold: >= 0.5',
-        'asr_0_5_se': 'ASR Threshold: >= 0.5 SE Across Prompts',
-        'asr_0_8': 'ASR Threshold: >= 0.8',
-        'asr_0_8_se': 'ASR Threshold: >= 0.8 SE Across Prompts',
-        'asr_1': 'ASR Threshold: = 1.0',
-        'asr_1_se': 'ASR Threshold: = 1.0 SE Across Prompts',
+        'asr_0': 'ASR, Threshold: >0',
+        'asr_0_se': 'ASR, Threshold: >0 SE Across Prompts',
+        'asr_0_3': 'ASR, Threshold: >= 0.3',
+        'asr_0_3_se': 'ASR, Threshold: >= 0.3 SE Across Prompts',
+        'asr_0_5': 'ASR, Threshold: >= 0.5',
+        'asr_0_5_se': 'ASR, Threshold: >= 0.5 SE Across Prompts',
+        'asr_0_8': 'ASR, Threshold: >= 0.8',
+        'asr_0_8_se': 'ASR, Threshold: >= 0.8 SE Across Prompts',
+        'asr_1': 'ASR, Threshold: = 1.0',
+        'asr_1_se': 'ASR, Threshold: = 1.0 SE Across Prompts',
         'n_prompts_with_sd': 'Prompts With Within-Prompt SD',
         'sd_within_prompt_oracle_rollouts': 'Within-Prompt Std across Oracle Rollouts',
         'sd_within_prompt_target_rollouts': 'Within-Prompt Std across Target Rollouts',
@@ -792,7 +792,7 @@ def apply_probe_sort(df: pd.DataFrame, probe_order: dict | None = None) -> pd.Da
 
 
 def build_provenance(details: pd.DataFrame, path_aliaser: PathAliaser, probe_order: dict) -> pd.DataFrame:
-    """Aggregate details into a per-condition/probe provenance table, ready for display."""
+    """Aggregate details into a per-condition/activation-slice provenance table, ready for display."""
     prov = (
         details
         .groupby(['condition', 'preset_source', 'oracle_prompt_file', 'probe_kind', 'probe_name'], dropna=False)

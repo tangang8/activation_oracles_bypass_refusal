@@ -69,10 +69,10 @@ def build_oracle_output_examples(
     probe_order: dict,
     path_aliaser: PathAliaser,
 ) -> pd.DataFrame:
-    """One example oracle output per unique score for every (condition, probe, oracle_prompt_file).
+    """One example oracle output per unique score for every (condition, activation slice, oracle_prompt_file).
 
     Picks the first cache row in each (condition, probe_kind, probe_name,
-    oracle_prompt_file, score) group, then orders rows by token-stream probe
+    oracle_prompt_file, score) group, then orders rows by token-stream activation slice
     rank (then score). Returns the peek DataFrame ready for display.
     """
     group_keys = ['condition', 'probe_kind', 'probe_name', 'oracle_prompt_file', 'score']
@@ -308,7 +308,7 @@ def extract_leaf(container, probe_kind: str, probe_name: str | None):
         return node
     if isinstance(node, dict):
         return node.get(probe_name)
-    # Scalar probe kinds (e.g. 'rollout_segment', 'full_seq') store the leaf
+    # Scalar activation slice kinds (e.g. 'rollout_segment', 'full_seq') store the leaf
     # value (string for oracle_response, dict for compliance) directly at
     # container[probe_kind] rather than nesting it under probe_name. In compile
     # we emit these as (probe_kind, probe_kind), so probe_name == probe_kind.
