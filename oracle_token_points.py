@@ -23,6 +23,20 @@ def _tokenize_ids(tokenizer: AutoTokenizer, text: str) -> list[int]:
     )["input_ids"][0].tolist()
 
 
+def _token_point_strs(tokenizer: AutoTokenizer, token_ids: list[int], token_points: dict[str, int]) -> dict[str, str]:
+    token_point_str: dict[str, str] = {}
+    for name, idx in token_points.items():
+        idx = int(idx)
+        if idx < 0 or idx >= len(token_ids):
+            raise IndexError(f"Token point {name!r} index {idx} is out of bounds for token length {len(token_ids)}.")
+        token_point_str[str(name)] = tokenizer.decode(
+            [int(token_ids[idx])],
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+        )
+    return token_point_str
+
+
 def _validate_prompt_response_boundary(prompt_ids: list[int], combined_ids: list[int]) -> None:
     prompt_len = len(prompt_ids)
     if combined_ids[:prompt_len] != prompt_ids:
@@ -62,6 +76,7 @@ def build_combined_points_spec(
         "rollout_segment": (prompt_len, combined_len),
         "token_points": points,
         "token_point_indices": sorted(set(points.values())),
+        "token_point_str": _token_point_strs(tokenizer, combined_ids, points),
     }
 
 
@@ -75,7 +90,8 @@ def build_prompt_only_points_spec(
         return_tensors="pt",
         add_special_tokens=False,
     )["input_ids"][0]
-    prompt_len = int(prompt_ids.shape[0])
+    prompt_ids_list = prompt_ids.tolist()
+    prompt_len = len(prompt_ids_list)
     if prompt_len <= 0:
         raise ValueError("Prompt has no tokens to probe.")
 
@@ -89,6 +105,7 @@ def build_prompt_only_points_spec(
         "rollout_segment": (prompt_len, prompt_len),
         "token_points": points,
         "token_point_indices": sorted(set(points.values())),
+        "token_point_str": _token_point_strs(tokenizer, prompt_ids_list, points),
     }
 
 
