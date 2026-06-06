@@ -509,11 +509,15 @@ def render_asr_table(df: pd.DataFrame):
 
 
 def render_baseline_table(df: pd.DataFrame):
-    """Baseline rows shown as one combined table: Mean Score, SE, and all ASR columns.
+    """Baseline rows shown as one combined table: Mean Score ± SE, Within-Prompt Std, and all ASR columns.
+
+    Both baselines vary across the (target) rollout index, so a single
+    Within-Prompt Std column captures their typical within-prompt rollout
+    variability.
 
     Color gradients:
-      - Mean Score: green gradient on its own scale
-      - SE Across Prompts: orange-red gradient on its own scale
+      - Mean Score ± SE: green gradient on the mean's own scale
+      - Within-Prompt Std across Rollouts: orange-red gradient on its own scale
       - All ASR cells: single green gradient pooled across every ASR mean.
     """
     src = df.reset_index(drop=True)
@@ -525,12 +529,13 @@ def render_baseline_table(df: pd.DataFrame):
         ('asr_0_8', 'asr_0_8_se', 'ASR, Threshold: >= 0.8'),
         ('asr_1',   'asr_1_se',   'ASR, Threshold: = 1.0'),
     ]
-    mean_label = 'Mean Score'
-    se_label = 'SE Across Prompts'
+    mean_label = 'Mean Score ± SE Across Prompts'
+    sd_label = 'Within-Prompt Std across Rollouts'
+    sd_col = 'mean_within_prompt_sd_target_rollouts'
 
     display_df = src[keep].copy()
-    display_df[mean_label] = [_fmt_pct(v) for v in src['mean_score']]
-    display_df[se_label] = [_fmt_pct(v) for v in src['se_score']]
+    display_df[mean_label] = [_fmt_mean_pm_se(mv, sv) for mv, sv in zip(src['mean_score'], src['se_score'])]
+    display_df[sd_label] = [_fmt_pct(v) for v in src[sd_col]]
     asr_means: dict[str, pd.Series] = {}
     for m, s, label in asr_specs:
         display_df[label] = [_fmt_mean_pm_se(mv, sv) for mv, sv in zip(src[m], src[s])]
@@ -540,13 +545,13 @@ def render_baseline_table(df: pd.DataFrame):
     display_df = rename_display_columns(display_df)
 
     score_means = {mean_label: src['mean_score']}
-    se_means = {se_label: src['se_score']}
+    sd_means = {sd_label: src[sd_col]}
 
     def _styler(d: pd.DataFrame) -> pd.DataFrame:
         base = 'text-align: right; font-variant-numeric: tabular-nums; padding: 5px 8px; vertical-align: middle;'
         out = pd.DataFrame(base, index=d.index, columns=d.columns)
         _gradient_styles_for_columns(out, score_means, 'YlGn', shared=False)
-        _gradient_styles_for_columns(out, se_means, 'YlOrRd', shared=False)
+        _gradient_styles_for_columns(out, sd_means, 'YlOrRd', shared=False)
         _gradient_styles_for_columns(out, asr_means, 'YlGn', shared=True)
         return out
 
@@ -651,10 +656,12 @@ def _apply_table_styles(styler):
     ], overwrite=True)
 
 
-def save_styler_png(styler, path: Path | str) -> Path:
+def save_styler_png(styler, path: Path | str, max_rows: int | None = None) -> Path:
     """Save a pandas Styler as a PNG figure using dataframe_image (playwright/chromium).
 
     Creates parent directories as needed. Returns the resolved output path.
+    dataframe_image refuses to render Stylers over 100 rows by default; pass
+    ``max_rows=-1`` to render all rows of a long table anyway.
     """
     import glob
     import dataframe_image as dfi
@@ -668,7 +675,8 @@ def save_styler_png(styler, path: Path | str) -> Path:
         str(Path.home() / '.cache/ms-playwright/chromium-*/chrome-linux64/chrome')
     ))
     chrome_path = chrome_candidates[-1] if chrome_candidates else None
-    dfi.export(styler, str(out_path), table_conversion='chrome', chrome_path=chrome_path)
+    export_kwargs = {} if max_rows is None else {'max_rows': max_rows}
+    dfi.export(styler, str(out_path), table_conversion='chrome', chrome_path=chrome_path, **export_kwargs)
     return out_path
 
 

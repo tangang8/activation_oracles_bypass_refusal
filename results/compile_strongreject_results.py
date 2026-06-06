@@ -25,13 +25,13 @@ SCALAR_PROBES = ("full_seq", "segment", "prompt_segment", "rollout_segment")
 # scientifically interesting:
 #   user_prompt_oracle (Exp 3): variability across oracle rollouts (oracle decoding reliability).
 #   target_rollout_oracle (Exp 4): variability across target rollouts (refusal leakiness variation).
-# Baselines (Exp 1, 2) vary across target rollouts but that's just target-model
-# response variability, not oracle-related — left blank.
+# Baselines (Exp 1, 2) are flattened via _flatten_target_entries, so their
+# within-prompt variation is across the (target) rollout index.
 CONDITION_TO_WITHIN_PROMPT_AXIS: dict[str, str | None] = {
     "user_prompt_oracle": "oracle_rollouts",
     "target_rollout_oracle": "target_rollouts",
-    "target_baseline": None,
-    "oracle_rollout_control": None,
+    "target_baseline": "target_rollouts",
+    "oracle_rollout_control": "target_rollouts",
 }
 ROLLOUT_POST_PROMPT_VARIANT = json.dumps(
     {
