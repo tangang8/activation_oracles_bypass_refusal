@@ -197,6 +197,7 @@ def run_oracle_batched(
     injection_layer: int = 1,
     steering_coefficient: float = 1.0,
     eval_batch_size: int = 32,
+    oracle_act_batch_size: int = 32,
     oracle_repeats: int = 1,
     oracle_input_types: list[str] | None = None,
     oracle_token_point_filter: str = "all",
@@ -509,6 +510,41 @@ def run_oracle_batched(
         assigned_token_point_indices = [token_point_indices_by_target[i] for i in assigned_missing_indices]
         assigned_cached_counts = [cached_counts_by_target[i] for i in assigned_missing_indices]
 
+        # Collect activations in sub-batches so peak memory does not scale with the number of
+        # rollouts: a single forward over all rollouts of a long-response target prompt OOMs (the
+        # eval-batch OOM ladder never helped — it only shrinks generation batches, not this). We
+        # keep only each rollout's *unpadded* activations, so the padded chunk tensor and its
+        # forward intermediates are freed between chunks. Start at oracle_act_batch_size and halve
+        # on OOM (down to 1), so short-rollout targets run in a few big forwards while long-rollout
+        # targets automatically back off to whatever fits.
+        submodules = {layer: get_hf_submodule(model, layer) for layer in act_layers}
+
+        def _collect_activations_in_chunks(chunk_size: int):
+            acts: list[torch.Tensor] = [None] * len(assigned_texts)  # type: ignore[list-item]
+            ids: list[list[int]] = [None] * len(assigned_texts)  # type: ignore[list-item]
+            for chunk_start in range(0, len(assigned_texts), chunk_size):
+                chunk_texts = assigned_texts[chunk_start : chunk_start + chunk_size]
+                chunk_inputs = _encode_formatted_prompts(tokenizer, chunk_texts, device)
+                chunk_acts = collect_activations_multiple_layers(
+                    model=model,
+                    submodules=submodules,
+                    inputs_BL=chunk_inputs,
+                    min_offset=None,
+                    max_offset=None,
+                )[act_layer]
+                chunk_ids = chunk_inputs["input_ids"]
+                chunk_attn = chunk_inputs["attention_mask"]
+                chunk_seq = int(chunk_ids.shape[1])
+                for j in range(len(chunk_texts)):
+                    left_pad = chunk_seq - int(chunk_attn[j].sum().item())
+                    idx = chunk_start + j
+                    ids[idx] = chunk_ids[j, left_pad:].tolist()
+                    # clone the unpadded slice so the full padded chunk tensor can be freed
+                    acts[idx] = chunk_acts[j, left_pad:].detach().clone()
+                del chunk_acts, chunk_inputs, chunk_ids, chunk_attn
+            return acts, ids
+
+        act_chunk = max(1, min(oracle_act_batch_size, len(assigned_texts)))
         with (
             perf.track(
                 "oracle/collect_activations",
@@ -523,31 +559,27 @@ def run_oracle_batched(
             if perf
             else nullcontext()
         ) as act_metrics:
-            inputs_bl = _encode_formatted_prompts(tokenizer, assigned_texts, device)
-            submodules = {layer: get_hf_submodule(model, layer) for layer in act_layers}
-            acts_by_layer = collect_activations_multiple_layers(
-                model=model,
-                submodules=submodules,
-                inputs_BL=inputs_bl,
-                min_offset=None,
-                max_offset=None,
-            )
+            while True:
+                try:
+                    target_acts, target_input_ids_by_target = _collect_activations_in_chunks(act_chunk)
+                    break
+                except torch.cuda.OutOfMemoryError:
+                    torch.cuda.empty_cache()
+                    if act_chunk <= 1:
+                        raise
+                    act_chunk = max(1, act_chunk // 2)
+                    maybe_log(
+                        f"[oracle activations] CUDA OOM during activation collection; "
+                        f"retrying at act_batch_size={act_chunk}"
+                    )
             if perf:
                 act_metrics["oracle/assigned_targets"] = float(len(assigned_texts))
-
-        seq_len = int(inputs_bl["input_ids"].shape[1])
-        attn = inputs_bl["attention_mask"]
-        left_pads = [seq_len - int(attn[i].sum().item()) for i in range(attn.shape[0])]
-        target_input_ids_by_target = [
-            inputs_bl["input_ids"][i, left_pads[i] :].tolist()
-            for i in range(attn.shape[0])
-        ]
+                act_metrics["oracle/act_batch_size"] = float(act_chunk)
 
         injection_submodule = get_hf_submodule(model, injection_layer)
         for local_target_idx, spec in enumerate(assigned_specs):
             global_target_idx = assigned_missing_indices[local_target_idx]
             target_input_ids = target_input_ids_by_target[local_target_idx]
-            left_pad = left_pads[local_target_idx]
             prompt_start, prompt_end = spec["prompt_segment"]
             rollout_start, rollout_end = spec["rollout_segment"]
             total_tokens = len(target_input_ids)
@@ -563,8 +595,7 @@ def run_oracle_batched(
             ) -> None:
                 if not positions_rel:
                     return
-                positions_abs = [left_pad + p for p in positions_rel]
-                acts_bd = acts_by_layer[act_layer][local_target_idx, positions_abs]
+                acts_bd = target_acts[local_target_idx][positions_rel]
                 meta = {
                     "target_idx": global_target_idx,
                     "probe_kind": probe_kind,
