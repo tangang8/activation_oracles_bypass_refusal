@@ -160,6 +160,25 @@ def _compliance_shell(entry: dict[str, Any]) -> dict[str, Any]:
     return shell
 
 
+def _overlay_existing_compliance(shell: dict[str, Any], existing: Any) -> None:
+    """Copy already-computed compliance scores from a prior judge entry onto a fresh shell
+    (which mirrors the current oracle_response). Only paths present in the shell are filled, so
+    reused scores are kept, new probes stay None (→ judged), and stale probes are dropped."""
+    if not isinstance(existing, dict):
+        return
+    for key, shell_val in shell.items():
+        ex_val = existing.get(key)
+        if isinstance(shell_val, dict):
+            # tokens / token_points buckets: copy scored leaves that still exist
+            if isinstance(ex_val, dict):
+                for sub in shell_val:
+                    if isinstance(ex_val.get(sub), dict):
+                        shell_val[sub] = deepcopy(ex_val[sub])
+        elif isinstance(ex_val, dict):
+            # scalar probe leaf (full_seq/segment/...): copy existing score
+            shell[key] = deepcopy(ex_val)
+
+
 def _oracle_judge_summary(judged_entries: list[dict[str, Any]]) -> dict[str, Any]:
     by_probe: dict[str, list[float]] = {}
     total_scored = 0
@@ -283,9 +302,21 @@ def judge_oracle_rollouts(
     pending_items: list[dict[str, Any]] = []
     for oracle_entry in oracle_rollout_entries:
         idx = _entry_index(oracle_entry)
-        base_entry = deepcopy(existing_by_index.get(idx, oracle_entry))
-        if "compliance" not in base_entry or not isinstance(base_entry["compliance"], dict):
-            base_entry["compliance"] = _compliance_shell(oracle_entry)
+        # Base the merged entry on the CURRENT oracle entry, so oracle_response / oracle_points /
+        # oracle_format always reflect the latest oracle output (which may have gained token
+        # points via backfill). Carry over already-computed compliance scores from any existing
+        # judge entry so unchanged probes are not re-judged; genuinely new probes fall through to
+        # pending. (Basing on the stale existing entry left oracle_response with fewer points than
+        # compliance had scores for.)
+        base_entry = deepcopy(oracle_entry)
+        existing_entry = existing_by_index.get(idx)
+        existing_compliance = existing_entry.get("compliance") if isinstance(existing_entry, dict) else None
+        # Build compliance mirroring the CURRENT oracle_response so its probe set always matches,
+        # reusing already-computed scores for probes that still exist (new ones stay None → pending,
+        # stale ones are dropped).
+        compliance = _compliance_shell(oracle_entry)
+        _overlay_existing_compliance(compliance, existing_compliance)
+        base_entry["compliance"] = compliance
         merged_by_index[idx] = base_entry
         for item in _flatten_oracle_responses(oracle_entry):
             existing_leaf = _get_path_leaf(base_entry["compliance"], item["path"])

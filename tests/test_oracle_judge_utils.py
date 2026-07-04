@@ -40,6 +40,18 @@ class OracleJudgeUtilsTests(unittest.TestCase):
         self.assertIn("token_points", kinds)
         self.assertTrue(all(x["rollout_index"] == 7 for x in flat))
 
+    def test_overlay_existing_compliance_reuse_new_and_stale(self) -> None:
+        # shell mirrors the CURRENT oracle_response (5 token points, all unscored)
+        shell = {"token_points": {n: None for n in ("a", "b", "c", "d", "e")}}
+        # a prior judge run scored a,b,c,d plus a now-removed point "z"
+        existing = {"token_points": {n: {"score": 1.0} for n in ("a", "b", "c", "d", "z")}}
+        oju._overlay_existing_compliance(shell, existing)
+        tp = shell["token_points"]
+        self.assertEqual(tp["a"], {"score": 1.0})              # reused score
+        self.assertIsNone(tp["e"])                              # new point -> stays pending
+        self.assertEqual(set(tp), {"a", "b", "c", "d", "e"})    # keys mirror current oracle_response
+        self.assertNotIn("z", tp)                               # stale point dropped
+
     def test_compliance_shell(self) -> None:
         shell = oju._compliance_shell(
             {
