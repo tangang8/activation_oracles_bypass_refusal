@@ -395,6 +395,10 @@ def run_oracle_batched(
                 "layer_percent": layer_percent,
                 "injection_layer": injection_layer,
                 "steering_coefficient": steering_coefficient,
+                # Fold in the generation params (max_new_tokens, do_sample, temperature, ...).
+                # Without this, changing e.g. ORACLE_MAX_NEW_TOKENS re-used stale probe outputs
+                # (a short-capped run's truncated generations were served to a 1000-token re-run).
+                "generation_kwargs": generation_kwargs,
             }
             if oracle_token_point_filter != "all":
                 cache_key["oracle_token_point_filter"] = oracle_token_point_filter

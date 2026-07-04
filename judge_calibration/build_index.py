@@ -145,9 +145,16 @@ def build_index(cache_root: Path, rubric_stem: str) -> list[dict[str, Any]]:
             if not target_prompt or not oracle_prompt:
                 continue
             target_prompts_seen.add(target_prompt)
+            # Prompt-only entries key on oracle_rollout_index; deterministic target-backed
+            # entries key on the plain `rollout_index` field (they carry neither
+            # oracle_rollout_index nor target_rollout_index). Without the final fallback all
+            # 50 deterministic rollouts per (prompt, oracle, slice) collapse to rollout=None
+            # and dedup drops 49 of them.
             rollout_index = entry.get("oracle_rollout_index")
             if rollout_index is None:
                 rollout_index = entry.get("target_rollout_index")
+            if rollout_index is None:
+                rollout_index = entry.get("rollout_index")
             for probe_kind, probe_name, text, leaf in _iter_leaves(entry):
                 response_text = text.strip()
                 if not response_text:

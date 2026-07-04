@@ -25,7 +25,7 @@ class BypassRefusalPipelineTests(unittest.TestCase):
             oracle_adapter_path="myorg/adapter",
             oracle_adapter_name="oracle",
             oracle_prompts_path="oracle_prompts.json",
-            judge_instruction_path="user_request_fulfillment.jinja2",
+            judge_instruction_path="strongReject_v5.jinja2",
             num_rollouts=2,
             k_rollouts=1,
             k_rollouts_raw=1,

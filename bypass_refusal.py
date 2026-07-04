@@ -160,7 +160,7 @@ class ExperimentConfig:
         k_rollouts = k_rollouts_raw if k_rollouts_raw > 0 else None
         num_oracle_rollouts = _env_int("NUM_ORACLE_ROLLOUTS", 1)
         oracle_prompts_raw = _env_str("ORACLE_PROMPTS_PATH", "prompts/oracle_prompts/default_oracle_prompts.json")
-        judge_instruction_raw = _env_str("JUDGE_INSTRUCTION_PATH", "user_request_fulfillment.jinja2")
+        judge_instruction_raw = _env_str("JUDGE_INSTRUCTION_PATH", "strongReject_v5.jinja2")
 
         return cls(
             model_name=model_name,

@@ -34,6 +34,28 @@ python -m judge_calibration.score_judges
 python -m judge_calibration.analyze
 ```
 
+### Regenerate the index + gold set
+
+After re-running / re-judging the oracle rollouts, rebuild Steps 0–2 from the **current**
+judged-oracle cache with one command:
+
+```bash
+./judge_calibration/regenerate_gold.sh
+```
+
+Equivalently by hand (note `--force` — `gold_sample.csv` is otherwise write-once):
+
+```bash
+PYTHONPATH=. python -m judge_calibration.build_index
+PYTHONPATH=. python -m judge_calibration.sample_gold --force
+PYTHONPATH=. python -m judge_calibration.make_labeling_sheet
+```
+
+This overwrites `ao_response_index.csv`, `gold_sample.csv`, `labeling_sheet.csv`, and
+`row_index_map.csv`. It leaves `gold_labels.csv` alone, but re-sampling changes which
+responses are in the set, so any labels from a previous sample must be redone. Steps 3–4
+(scoring + analysis) are run separately and are unaffected by this.
+
 ### The GPT-4o querying pipeline (`openai_judge.py`)
 
 An async OpenAI client with bounded concurrency and retry/backoff, wired into **this**

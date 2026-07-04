@@ -109,7 +109,7 @@ Everything is env-var driven. `ExperimentConfig.from_env()` parses and validates
 | `ORACLE_TOKEN_POINT_FILTER` | `all` | `all` or `post_prompt` (keep only rollout-token points) |
 | `TARGET_PROMPT_OFFSET` / `TARGET_PROMPT_LIMIT` | `0` / `100` | dataset slice |
 | `ORACLE_PROMPTS_PATH` | `prompts/oracle_prompts/default_oracle_prompts.json` | resolved relative to repo |
-| `JUDGE_INSTRUCTION_PATH` | `user_request_fulfillment.jinja2` | passed raw to `load_judge_instruction()` (NOT auto-resolved) |
+| `JUDGE_INSTRUCTION_PATH` | `strongReject_v5.jinja2` | passed raw to `load_judge_instruction()` (NOT auto-resolved) |
 | `HF_TOKEN` | required at runtime | via `_require_hf_token()` from workspace `.env` |
 
 ### Validation rules (from_env)
@@ -307,7 +307,10 @@ Path builders (all rooted at `cache/`):
 
 Cache keys fold in **every** parameter that changes outputs (model, LoRA, temperature,
 thinking mode, input types, token-point filter, k). Changing any of these forks a new cache
-path rather than corrupting an existing one.
+path rather than corrupting an existing one. In particular the leaf `oracle_cache_file_path`
+key also includes the full `generation_kwargs` (`max_new_tokens`, `do_sample`, …); without this
+a run with a different `ORACLE_MAX_NEW_TOKENS` silently re-used a prior run's (e.g. short-capped,
+truncated) probe outputs instead of regenerating.
 
 One deliberate exception: the *specific token-point set* (names/indices) is keyed differently
 per layer. The stochastic leaf key (`oracle_cache_file_path`) **includes** `token_point_indices`,
