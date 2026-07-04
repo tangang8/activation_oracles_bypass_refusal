@@ -1,0 +1,147 @@
+_wandb:
+    value:
+        cli_version: 0.21.1
+        e:
+            553729oexztkq8pygb2mpmrf6nypyt59:
+                codePath: bypass_refusal.py
+                codePathLocal: bypass_refusal.py
+                cpu_count: 128
+                cpu_count_logical: 256
+                cudaVersion: "13.2"
+                disk:
+                    /:
+                        total: "224412041216"
+                        used: "39604080640"
+                email: angelaatang@gmail.com
+                executable: /workspace/.venv/bin/python
+                git:
+                    commit: e0f535e6e499b4d4cec5dd7a813aadd41603dfc1
+                    remote: git@github.com:tangang8/activation_oracles_bypass_refusal
+                gpu: NVIDIA A100-SXM4-80GB
+                gpu_count: 2
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-66a2d7af-d96d-4951-16b4-bde694d83828
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-17adf32f-8b71-8adc-547b-d98983238fe1
+                host: 7172b2e6dd8b
+                memory:
+                    total: "1081950072832"
+                os: Linux-6.17.0-35-generic-x86_64-with-glibc2.39
+                program: /workspace/activation_oracles_bypass_refusal/bypass_refusal.py
+                python: CPython 3.12.3
+                root: /workspace/activation_oracles_bypass_refusal
+                startedAt: "2026-07-04T13:14:17.396266Z"
+                writerId: 553729oexztkq8pygb2mpmrf6nypyt59
+        m: []
+        python_version: 3.12.3
+        t:
+            "1":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 51
+                - 53
+                - 71
+                - 98
+                - 105
+            "2":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 51
+                - 53
+                - 71
+                - 98
+                - 105
+            "3":
+                - 2
+                - 13
+                - 16
+            "4": 3.12.3
+            "5": 0.21.1
+            "6": 4.55.2
+            "10":
+                - 20
+            "12": 0.21.1
+            "13": linux-x86_64
+device:
+    value: cuda
+distributed_enabled:
+    value: false
+dtype:
+    value: torch.bfloat16
+experiment_preset:
+    value: prompt_only_oracle
+judge_instruction_file:
+    value: strongReject_v5.jinja2
+judge_lora_path:
+    value: default
+judge_thinking_mode:
+    value: "off"
+k_rollouts:
+    value: 0
+max_new_tokens:
+    value: 10000
+model_name:
+    value: Qwen/Qwen3-8B
+num_oracle_rollouts:
+    value: 50
+num_rollouts:
+    value: 50
+oracle_adapter_name:
+    value: oracle
+oracle_adapter_path:
+    value: adamkarvonen/checkpoints_latentqa_cls_past_lens_addition_Qwen3-8B
+oracle_eval_batch_size:
+    value: 128
+oracle_input_types:
+    value: null
+oracle_judge_batch_size:
+    value: 64
+oracle_max_new_tokens:
+    value: 1000
+oracle_prompts_path:
+    value: /workspace/activation_oracles_bypass_refusal/prompts/oracle_prompts/model_answer_min_200_words.json
+oracle_prompts_total:
+    value: 1
+oracle_rollout_mode:
+    value: prompt_only_repeats
+oracle_runtime_lora_path:
+    value: oracle
+oracle_token_point_filter:
+    value: all
+rank_zero_device:
+    value: cuda
+run_oracle_judging:
+    value: 1
+run_oracle_rollouts:
+    value: 1
+run_target_judging:
+    value: 0
+run_target_rollouts:
+    value: 0
+target_judge_batch_size:
+    value: 16
+target_lora_path:
+    value: default
+target_prompt_limit:
+    value: 25
+target_prompt_offset:
+    value: 25
+target_prompts_total:
+    value: 25
+target_thinking_mode:
+    value: default
+world_size:
+    value: 1
