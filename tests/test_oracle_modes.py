@@ -54,6 +54,10 @@ class _FakeTokenizer:
         }
         return mapping.get(text, [0])
 
+    def decode(self, token_ids, skip_special_tokens: bool = False, clean_up_tokenization_spaces: bool = False) -> str:
+        del skip_special_tokens, clean_up_tokenization_spaces
+        return "".join(f"<{int(t)}>" for t in token_ids)
+
 
 class OracleCachePathTests(unittest.TestCase):
     def test_prompt_only_cache_path_layout(self) -> None:

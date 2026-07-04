@@ -52,13 +52,14 @@ class RunParallelScriptTests(unittest.TestCase):
             env["RUN_LABEL"] = "unit_parallel_label"
             env["LOG_ROOT"] = str(Path(tmpdir) / "logs")
             env["DRY_RUN"] = "1"
+            env["GPU_IDS"] = "0,1,2,3"  # explicit, so it doesn't depend on nvidia-smi auto-detect
             proc = subprocess.run([str(SCRIPT)], capture_output=True, text=True, check=False, env=env)
             self.assertEqual(proc.returncode, 0)
             self.assertIn("run_label=unit_parallel_label", proc.stdout)
             self.assertIn("GPU pool: 0 1 2 3", proc.stdout)
             self.assertIn("Job table:", proc.stdout)
-            self.assertIn("job=deterministic_shard_0_prompt_0", proc.stdout)
-            self.assertIn("depends_on=target_shard_A", proc.stdout)
+            self.assertIn("job=deterministic_prompt_0_shard_0", proc.stdout)
+            self.assertIn("depends_on=target_shard_0", proc.stdout)
             self.assertIn("Summary done:", proc.stdout)
             self.assertIn("Summary failed: <none>", proc.stdout)
 
@@ -71,18 +72,16 @@ class RunParallelScriptTests(unittest.TestCase):
                 env["DRY_RUN"] = "1"
                 env["GPU_IDS"] = gpu_ids
                 env["TARGET_PROMPT_TOTAL"] = "2"
-                env["TARGET_PROMPT_SPLIT"] = "1"
                 env["NUM_ROLLOUTS"] = "1"
                 env["NUM_ORACLE_ROLLOUTS"] = "1"
                 proc = subprocess.run([str(SCRIPT)], capture_output=True, text=True, check=False, env=env)
                 self.assertEqual(proc.returncode, 0)
                 self.assertIn(f"GPU pool: {gpu_ids.replace(',', ' ')}", proc.stdout)
                 self.assertIn("All parallel jobs completed successfully.", proc.stdout)
+                # 2 target prompts cap the shards at 2 non-empty; x2 oracle prompts = 4 deterministic jobs
                 self.assertEqual(proc.stdout.count(" type=deterministic preset="), 4)
-                self.assertIn("job=deterministic_shard_4_prompt_0 type=", proc.stdout)
-                self.assertIn("job=deterministic_shard_9_prompt_0 type=", proc.stdout)
-                self.assertIn("job=deterministic_shard_4_prompt_1 type=", proc.stdout)
-                self.assertIn("job=deterministic_shard_9_prompt_1 type=", proc.stdout)
+                self.assertIn("job=deterministic_prompt_0_shard_", proc.stdout)
+                self.assertIn("job=deterministic_prompt_1_shard_", proc.stdout)
 
     def test_non_oom_failure_fails_sequence(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -91,7 +90,6 @@ class RunParallelScriptTests(unittest.TestCase):
             env["RUN_LABEL"] = "unit_parallel_fail"
             env["LOG_ROOT"] = str(Path(tmpdir) / "logs")
             env["TARGET_PROMPT_TOTAL"] = "1"
-            env["TARGET_PROMPT_SPLIT"] = "1"
             env["NUM_ROLLOUTS"] = "1"
             env["NUM_ORACLE_ROLLOUTS"] = "1"
             env["RUN_ORACLE_EXPERIMENT"] = str(fake_runner)
@@ -108,7 +106,6 @@ class RunParallelScriptTests(unittest.TestCase):
             env["RUN_LABEL"] = "unit_parallel_oom"
             env["LOG_ROOT"] = str(Path(tmpdir) / "logs")
             env["TARGET_PROMPT_TOTAL"] = "1"
-            env["TARGET_PROMPT_SPLIT"] = "1"
             env["NUM_ROLLOUTS"] = "1"
             env["NUM_ORACLE_ROLLOUTS"] = "1"
             env["RUN_ORACLE_EXPERIMENT"] = str(fake_runner)

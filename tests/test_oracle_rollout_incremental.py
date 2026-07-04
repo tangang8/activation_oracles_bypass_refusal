@@ -46,26 +46,38 @@ def _fake_full_result(_prompt: str, response: str, points: dict[str, int]) -> di
 
 @unittest.skipIf(not _IMPORT_OK, "oracle_rollout_utils dependencies unavailable")
 class MergeTokenPointsHelperTests(unittest.TestCase):
-    def test_merge_adds_missing_only_and_refreshes_points(self) -> None:
+    def test_merge_adds_response_and_metadata_from_required_spec(self) -> None:
         entry = {
             "oracle_response": {"full_seq": "FS", "token_points": {"a": "A", "b": "B"}},
             "oracle_format": {"token_points": {"a": {}, "b": {}}},
-            "oracle_points": {"token_points": {"a": 1, "b": 2}, "token_point_indices": [1, 2]},
+            "oracle_points": {"token_points": {"a": 1, "b": 2}, "token_point_indices": [1, 2],
+                              "token_point_str": {"a": "sa", "b": "sb"}},
         }
+        # The real backfill call resolves an EMPTY point spec (it is driven by explicit
+        # indices), so oracle_result["points"] carries no token points — the regression.
         result = {
             "token_points": {3: ["C-DECODE"]},
-            "points": {"token_points": {"a": 1, "b": 2, "c": 3}, "token_point_indices": [1, 2, 3]},
+            "points": {"token_points": {}, "token_point_indices": [], "token_point_str": {}},
         }
-        oru._merge_token_points_into_entry(entry, result, {"c": 3})
+        required_spec = {
+            "token_points": {"a": 1, "b": 2, "c": 3},
+            "token_point_indices": [1, 2, 3],
+            "token_point_str": {"a": "sa", "b": "sb", "c": "sc"},
+        }
+        oru._merge_token_points_into_entry(entry, result, {"c": 3}, required_spec)
 
         tp = entry["oracle_response"]["token_points"]
-        self.assertEqual(tp["c"], "C-DECODE")            # new point added
+        self.assertEqual(tp["c"], "C-DECODE")            # new decode added
         self.assertEqual(tp["a"], "A")                   # existing untouched
-        self.assertEqual(tp["b"], "B")
         self.assertEqual(entry["oracle_response"]["full_seq"], "FS")  # segment untouched
         self.assertIn("c", entry["oracle_format"]["token_points"])
-        # oracle_points refreshed to include the new point
-        self.assertEqual(entry["oracle_points"]["token_point_indices"], [1, 2, 3])
+        # THE FIX: oracle_points metadata gets the new point (index + decoded str) even
+        # though oracle_result["points"] was empty — taken from required_spec.
+        op = entry["oracle_points"]
+        self.assertEqual(op["token_points"]["c"], 3)
+        self.assertEqual(op["token_points"]["a"], 1)     # existing preserved
+        self.assertEqual(op["token_point_indices"], [1, 2, 3])
+        self.assertEqual(op["token_point_str"]["c"], "sc")
 
 
 @unittest.skipIf(not _IMPORT_OK, "oracle_rollout_utils dependencies unavailable")
@@ -97,12 +109,17 @@ class DeterministicIncrementalTokenPointTests(unittest.TestCase):
         old_points = {"a": 1, "b": 2}
         new_points = {"a": 1, "b": 2, "c": 3}  # 'c' added later
 
+        def _spec(points):
+            return {"token_points": dict(points),
+                    "token_point_indices": sorted(points.values()),
+                    "token_point_str": {n: f"str_{n}" for n in points}}
+
         with mock.patch.object(oru, "format_user_target_prompt", return_value="FP"), \
              mock.patch.object(oru, "run_oracle_batched") as rob, \
-             mock.patch.object(oru, "_required_combined_token_points") as req:
+             mock.patch.object(oru, "_required_combined_spec") as req:
 
             # --- Phase 1: fresh run, both rollouts missing -> full compute of a,b ---
-            req.return_value = dict(old_points)
+            req.return_value = _spec(old_points)
             rob.side_effect = lambda **kw: [
                 _fake_full_result("FP", r, old_points) for r in kw["target_responses"]
             ]
@@ -111,14 +128,14 @@ class DeterministicIncrementalTokenPointTests(unittest.TestCase):
             self.assertEqual(rob.call_args.kwargs["oracle_input_types"],
                              ["full_seq", "prompt_segment", "rollout_segment", "token_points"])
 
-            # --- Phase 2: extractor now emits 'c' -> only 'c' should be computed & merged ---
+            # --- Phase 2: extractor now emits 'c' -> only 'c' computed & merged. The backfill's
+            # run_oracle_batched returns an EMPTY point spec (real behavior), so metadata must
+            # come from the required spec. ---
             rob.reset_mock()
-            req.return_value = dict(new_points)
+            req.return_value = _spec(new_points)
             rob.side_effect = lambda **kw: [
                 {"token_points": {3: [f"C::{r}"]},
-                 "points": {"token_points": dict(new_points),
-                            "token_point_indices": [1, 2, 3],
-                            "token_point_str": {"a": "s1", "b": "s2", "c": "s3"}}}
+                 "points": {"token_points": {}, "token_point_indices": [], "token_point_str": {}}}
                 for r in kw["target_responses"]
             ]
             entries2, _, stats2 = self._run()
@@ -130,12 +147,18 @@ class DeterministicIncrementalTokenPointTests(unittest.TestCase):
             self.assertEqual(call["token_point_indices_by_target"], [[3], [3]])
             self.assertEqual(stats2["cache/oracle_incomplete"], 2.0)
 
-            # new point merged, existing decodes preserved (segments NOT recomputed)
+            # new point merged into BOTH response and oracle_points metadata; existing
+            # decodes/segments preserved (not recomputed).
             for e in entries2:
                 tp = e["oracle_response"]["token_points"]
                 self.assertEqual(set(tp), {"a", "b", "c"})
                 self.assertTrue(e["oracle_response"]["full_seq"].startswith("FS::"))
                 self.assertTrue(tp["c"].startswith("C::"))
+                op = e["oracle_points"]
+                self.assertEqual(op["token_points"]["c"], 3)                 # name -> index
+                self.assertIn(3, op["token_point_indices"])                  # index list
+                self.assertEqual(op["token_point_str"]["c"], "str_c")        # decoded token str
+                self.assertEqual(op["token_points"]["a"], 1)                 # existing preserved
 
             # persisted to disk too
             on_disk = load_json(Path(cache_file))

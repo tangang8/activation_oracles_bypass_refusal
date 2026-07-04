@@ -42,6 +42,10 @@ class _FakeTokenizer:
         }
         return mapping[text]
 
+    def decode(self, token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False):
+        del skip_special_tokens, clean_up_tokenization_spaces
+        return "".join(f"<{int(t)}>" for t in token_ids)
+
 
 class _BoundaryUnstableTokenizer(_FakeTokenizer):
     def __call__(self, text, return_tensors, add_special_tokens):
