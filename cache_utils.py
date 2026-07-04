@@ -147,6 +147,38 @@ def judge_cache_file_path(
     )
 
 
+def api_judge_cache_file_path(
+    cache_root: str,
+    judge_model_name: str,
+    judge_generation_kwargs: dict[str, Any],
+    judge_instruction_stem: str,
+    user_prompt: str,
+    model_response: str,
+) -> Path:
+    """
+    Build cache file path for an API judge scoring one (user_prompt, model_response) pair.
+
+    Follows the same shape as the other judge caches -- judge model + temperature dir, then
+    judge instruction stem -- but keyed on the (prompt, response) text the judge saw rather
+    than a target prompt, since an API judge grades text directly (no target/oracle model).
+
+    Layout:
+      cache/judge_{judge_model}_temp-{temperature}/
+      {judge_instruction_stem}/
+      {user_prompt_preview_hash}/{model_response_preview_hash}.json
+    """
+    judge_dir = _model_bundle_dir("judge", judge_model_name, "default")
+    temp = judge_generation_kwargs.get("temperature")
+    judge_temp_dir = Path(f"{judge_dir}_temp-{temp}")
+    return (
+        Path(cache_root)
+        / judge_temp_dir
+        / sanitize_for_path(judge_instruction_stem)
+        / _preview_hash_name(user_prompt)
+        / f"{_preview_hash_name(model_response)}.json"
+    )
+
+
 def oracle_cache_file_path(
     cache_root: str,
     target_model_name: str,

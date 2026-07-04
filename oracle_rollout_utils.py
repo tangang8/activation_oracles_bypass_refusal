@@ -14,7 +14,11 @@ from cache_utils import (
     write_json,
 )
 from distributed_utils import DistributedContext, broadcast_object
-from oracle_pipeline import run_oracle_batched
+from oracle_pipeline import run_oracle_batched, _filter_token_points_post_prompt
+from oracle_token_points import (
+    COMBINED_TOKEN_POINT_EXTRACTORS_BY_MODEL_NAME,
+    extract_token_points_combined_default,
+)
 from perf_utils import PerfLogger
 from rollout_utils import format_user_target_prompt
 
@@ -311,6 +315,50 @@ def _to_deterministic_oracle_entry(
     }
 
 
+def _required_combined_token_points(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    formatted_target_prompt: str,
+    target_response: str,
+    oracle_token_point_filter: str,
+) -> dict[str, int]:
+    """Name -> index map of the token points the current extractor emits for this
+    (prompt, response), honoring the post_prompt filter. Mirrors the extractor
+    selection inside run_oracle_batched so completeness can be checked here."""
+    extractor = COMBINED_TOKEN_POINT_EXTRACTORS_BY_MODEL_NAME.get(
+        model.config._name_or_path, extract_token_points_combined_default
+    )
+    spec = extractor(tokenizer, formatted_target_prompt, target_response)
+    if oracle_token_point_filter == "post_prompt":
+        spec = _filter_token_points_post_prompt(spec)
+    return {str(name): int(idx) for name, idx in spec.get("token_points", {}).items()}
+
+
+def _merge_token_points_into_entry(
+    existing_entry: dict[str, Any],
+    oracle_result: dict[str, Any],
+    missing_name_to_index: dict[str, int],
+) -> None:
+    """Splice newly-computed token-point decodes into an already-cached deterministic
+    oracle entry, leaving existing probe outputs untouched. Refreshes oracle_points so
+    token_point_indices / token_point_str include the added points."""
+    token_points_raw = oracle_result.get("token_points", {})
+    if not isinstance(token_points_raw, dict):
+        token_points_raw = {}
+    oracle_response = existing_entry.setdefault("oracle_response", {})
+    oracle_format = existing_entry.setdefault("oracle_format", {})
+    tp_response = oracle_response.setdefault("token_points", {})
+    tp_format = oracle_format.setdefault("token_points", {})
+    for name, idx in missing_name_to_index.items():
+        values = token_points_raw.get(idx, token_points_raw.get(str(idx), []))
+        text = _first_response(values)
+        tp_response[name] = text
+        tp_format[name] = _format_leaf(text)
+    refreshed_points = oracle_result.get("points")
+    if isinstance(refreshed_points, dict) and refreshed_points.get("token_points"):
+        existing_entry["oracle_points"] = refreshed_points
+
+
 def _oracle_result_for_repeat(
     oracle_result: dict[str, Any],
     repeat_idx: int,
@@ -478,11 +526,45 @@ def generate_deterministic_oracle_rollouts(
             continue
         existing_by_index[idx] = entry
 
+    target_enable_thinking = False if target_thinking_mode == "off" else None
+
+    # Rollouts absent from the cache entirely -> compute every requested probe.
     missing_target_entries = [
         entry
         for entry in selected_targets
         if int(entry["rollout_index"]) not in existing_by_index
     ]
+
+    # Rollouts already cached but missing token points the current extractor now emits
+    # (e.g. after adding a token point). Compute ONLY the missing probes and splice them
+    # into the existing entry, reusing every decode already on disk.
+    incomplete_items: list[tuple[dict[str, Any], dict[str, Any], dict[str, int]]] = []
+    if "token_points" in oracle_input_types:
+        for target_entry in selected_targets:
+            idx = int(target_entry["rollout_index"])
+            existing = existing_by_index.get(idx)
+            if existing is None:
+                continue
+            try:
+                required = _required_combined_token_points(
+                    model,
+                    tokenizer,
+                    format_user_target_prompt(
+                        tokenizer,
+                        str(target_entry.get("target_prompt", "")),
+                        enable_thinking=target_enable_thinking,
+                    ),
+                    str(target_entry.get("target_response", "")),
+                    oracle_token_point_filter,
+                )
+            except Exception:
+                # Cached under different/older extraction that no longer resolves; leave as-is.
+                continue
+            present = set(existing.get("oracle_response", {}).get("token_points", {}))
+            missing = {name: i for name, i in required.items() if name not in present}
+            if missing:
+                incomplete_items.append((target_entry, existing, missing))
+
     selected_hit_count = len(selected_targets) - len(missing_target_entries)
 
     rank = dist_ctx.rank if dist_ctx is not None else 0
@@ -490,6 +572,7 @@ def generate_deterministic_oracle_rollouts(
     cache_stats = {
         "cache/oracle_hits": float(selected_hit_count),
         "cache/oracle_missing": float(len(missing_target_entries)),
+        "cache/oracle_incomplete": float(len(incomplete_items)),
         "cache/oracle_total": float(len(selected_targets)),
         "cache/oracle_deterministic_k_rollouts": float(k_rollouts or 0),
     }
@@ -501,7 +584,6 @@ def generate_deterministic_oracle_rollouts(
         )
 
     if missing_target_entries:
-        target_enable_thinking = False if target_thinking_mode == "off" else None
         formatted_target_prompts = [
             format_user_target_prompt(
                 tokenizer,
@@ -542,6 +624,46 @@ def generate_deterministic_oracle_rollouts(
         ]
     else:
         new_entries = []
+
+    # Fill in only the missing token points on already-cached entries (mutates the
+    # entries referenced by existing_by_index in place, so the write below picks them up).
+    if incomplete_items:
+        incomplete_results = run_oracle_batched(
+            model=model,
+            tokenizer=tokenizer,
+            device=device,
+            formatted_target_prompts=[
+                format_user_target_prompt(
+                    tokenizer,
+                    str(entry.get("target_prompt", "")),
+                    enable_thinking=target_enable_thinking,
+                )
+                for entry, _existing, _missing in incomplete_items
+            ],
+            target_responses=[str(entry.get("target_response", "")) for entry, _e, _m in incomplete_items],
+            oracle_prompt=oracle_prompt,
+            user_prompts=[str(entry.get("target_prompt", "")) for entry, _e, _m in incomplete_items],
+            cache_root=cache_root,
+            target_lora_path=None,
+            oracle_lora_path=oracle_lora_path,
+            generation_kwargs=oracle_generation_kwargs,
+            eval_batch_size=eval_batch_size,
+            oracle_repeats=1,
+            oracle_input_types=["token_points"],
+            oracle_token_point_filter=oracle_token_point_filter,
+            token_point_indices_by_target=[
+                sorted(set(missing.values())) for _e, _x, missing in incomplete_items
+            ],
+            oracle_input_source_type="target_rollout",
+            use_probe_cache=False,
+            dist_ctx=dist_ctx,
+            perf=perf,
+        )
+        for (_target_entry, existing, missing), result in zip(
+            incomplete_items, incomplete_results, strict=True
+        ):
+            result["oracle_prompt"] = oracle_prompt
+            _merge_token_points_into_entry(existing, result, missing)
 
     is_main = dist_ctx is None or not dist_ctx.enabled or dist_ctx.is_main
     final_entries: list[dict[str, Any]] | None = None

@@ -2,6 +2,19 @@
 
 This file provides guidance to agents (Claude Code, Cursor, etc.) when working in this repository. `CLAUDE.md` is a symlink to this file (`ln -s AGENTS.md CLAUDE.md`).
 
+## How the codebase works → ARCHITECTURE.md
+
+**For anything about how the code actually works — data flow, function names, the four-stage
+pipeline, oracle rollout modes, the activation-probe engine, cache schema, env-var contracts,
+results compilation, and per-file responsibilities — read [ARCHITECTURE.md](ARCHITECTURE.md).**
+It is the authoritative, agent-facing description of the system.
+
+This file (AGENTS.md) intentionally holds only **coding guidelines** and **operational
+commands**. It does not duplicate the architecture, so that mechanics live in exactly one
+place and can't drift out of sync. The ground truth for configuration is
+`ExperimentConfig.from_env()` in `bypass_refusal.py`; the ground truth for result aggregation
+is `results/compile_strongreject_results.py`.
+
 ## Coding Guidelines
 
 Behavioral guidelines to reduce common LLM coding mistakes. These bias toward caution over speed; for trivial tasks, use judgment.
@@ -70,12 +83,6 @@ Strong success criteria allow independent verification. Weak criteria ("make it 
 
 **These guidelines are working if:** diffs have fewer unnecessary changes, fewer rewrites from overcomplication, and clarifying questions come before implementation rather than after mistakes.
 
-## Project Overview
-
-**activation_oracles_bypass_refusal** extends the upstream [activation_oracles](https://github.com/adamkarvonen/activation_oracles) repository with experimental utilities for oracle rollout modes and evaluation pipelines. The project runs multi-stage experiments that generate target model responses, judge them with classification models, and optionally run oracle-guided rollouts using activation probes.
-
-**Key capability**: Oracle rollout modes allow generating responses based on different oracle input strategies (deterministic, sampled with repeats, or prompt-only), with flexible stage gates to skip target generation, target judging, oracle generation, or oracle judging as needed.
-
 ## Directory Structure & Sibling Dependency
 
 This repo requires a specific parent-folder layout:
@@ -83,48 +90,13 @@ This repo requires a specific parent-folder layout:
 ```
 <parent-folder>/
 ├── activation_oracles_bypass_refusal/  (this repo)
-└── activation_oracles/              (upstream repo)
+└── activation_oracles/                 (upstream repo)
 ```
 
-Both repos should be cloned with exact names. The activation_oracles repo is imported via sys.path manipulation in `oracle_pipeline.py` to access the activation probing utilities.
-
-## Core Modules
-
-### Pipeline Orchestration
-- **bypass_refusal.py**: Main entry point. Loads `ExperimentConfig` from environment variables, orchestrates the four-stage pipeline (target rollout → target judge → oracle rollout → oracle judge), and logs results to W&B.
-- **run_oracle_experiment.sh**: Bash wrapper with editable defaults and CLI overrides for common presets. Handles model/adapter mappings and stage gate logic.
-- **run_parallel_strongreject_v5.sh**: Multi-GPU scheduler for full StrongReject v5 sweeps (target shards, prompt-only oracle, oracle target control, rollout-post-prompt deterministic shards). Logs under `logs/parallel_<timestamp>/` (default `RUN_LABEL=parallel_<timestamp>`).
-- **run_overnight_strongreject_v5.sh**: Simpler two-stage overnight driver (prompt-only oracle, then target judging only). Logs under `logs/overnight_<timestamp>/`.
-
-### Oracle Rollout Modes
-- **oracle_rollout_utils.py**: Implements three oracle rollout modes controlled by `ORACLE_ROLLOUT_MODE` env var:
-  - `all_target_deterministic`: Uses all judged target rollouts; runs one oracle rollout per target at temperature=0.0
-  - `sampled_target_repeats`: Samples K target rollouts; runs NUM_ORACLE_ROLLOUTS repeats at temperature=1.0
-  - `prompt_only_repeats`: Ignores target responses; runs NUM_ORACLE_ROLLOUTS repeats at temperature=1.0
-
-### Model & Adapter Loading
-- **model_loading_utils.py**: Loads base models via transformers, applies LoRA adapters (from peft), handles dtype casting (bfloat16).
-- **oracle_pipeline.py**: Collects activation probes from specified layers, evaluates oracle inputs using activation-based classifiers, returns predictions used to guide generation.
-
-### Response Generation & Judging
-- **rollout_utils.py**: Generates target responses, extracts thinking tags (model-specific), applies stopping criteria, caches results. Provides batch judgment via compliance scoring.
-- **oracle_judge_utils.py**: Judges oracle-generated responses; flattens oracle output structure, applies compliance scoring, aggregates scores across rollouts.
-
-### Prompt & Cache Management
-- **prompt_utils.py**: Loads oracle prompts and target prompts from files (JSON, JSONL, txt); generates stable cache keys via preview+hash.
-- **cache_utils.py**: Manages cache directory structure for target rollouts, oracle rollouts, and judge outputs; provides sanitized path construction.
-
-### Utilities & Logging
-- **oracle_token_points.py**: Extracts token-level activation points for probing; validates prompt/response tokenization boundaries.
-- **judge_instruction_utils.py**: Loads Jinja2 judge instruction templates from `prompts/judge_classification_instructions/`.
-- **perf_utils.py**: Performance logging with context managers.
-- **wandb_utils.py**: W&B integration for metrics logging across pipeline stages.
-- **distributed_utils.py**: Distributed (multi-GPU) support via torch.distributed; broadcast/gather across ranks.
-
-### Compilation & Reporting
-- **results/compile_strongreject_results.py**: Workflow-traced StrongReject compiler. This is the source of truth for aggregation.
-- **compile_results.py**: Compatibility wrapper that delegates to the StrongReject compiler; it no longer scans arbitrary cache files.
-- **report_pages.py** & **generate_reports.py**: StrongReject-only static website generation from compiled CSV/manifest outputs.
+Both repos must be cloned with these exact names. The upstream `activation_oracles` repo is
+imported via `sys.path` manipulation in `oracle_pipeline.py` (`nl_probes.utils.*`) to access
+the activation probing utilities. If oracle stages fail to import, this sibling is almost
+always missing or renamed.
 
 ## Key Commands
 
@@ -144,7 +116,6 @@ PYTHONPATH=".:results" python -m unittest tests.test_prompt_utils.PromptUtilsTes
 ```bash
 bash -n run_oracle_experiment.sh
 bash -n run_parallel_strongreject_v5.sh
-bash -n run_overnight_strongreject_v5.sh
 ```
 
 ### Run Experiments
@@ -176,12 +147,18 @@ ORACLE_ROLLOUT_MODE=prompt_only_repeats NUM_ORACLE_ROLLOUTS=3 TARGET_PROMPT_LIMI
 # Override label: RUN_LABEL=my_run LOG_ROOT=logs/my_run ./run_parallel_strongreject_v5.sh
 ```
 
-**Overnight StrongReject v5** (sequential prompt-only, then target judging):
-```bash
-./run_overnight_strongreject_v5.sh
-```
-
 Older runs may still have logs under `logs/parallel_h200_<timestamp>/` from before the script rename; new runs use `logs/parallel_<timestamp>/`.
+
+> Preset behavior, the full env-var contract, and the scheduler's job graph / OOM retry
+> ladders are documented in [ARCHITECTURE.md](ARCHITECTURE.md) (§3, §9). Do not rely on any
+> env-var defaults quoted from memory — check `ExperimentConfig.from_env()`.
+
+### Compile results & build the report
+```bash
+# Compile cached judge outputs → CSVs + manifest, then generate website/index.html
+python generate_reports.py --compile-first --cache-root cache
+```
+See [ARCHITECTURE.md](ARCHITECTURE.md) §10 for the aggregation levels and outputs.
 
 ## Environment & Dependencies
 
@@ -199,90 +176,16 @@ Older runs may still have logs under `logs/parallel_h200_<timestamp>/` from befo
   ```
 - **Runtime deps** (from activation_oracles): torch, transformers, peft, tqdm, dotenv, wandb, bitsandbytes (GPU-only)
 
-## Configuration via Environment Variables
-
-All experiment parameters are env-var driven (see `ExperimentConfig.from_env()` in bypass_refusal.py):
-
-**Core settings**:
-- `MODEL_NAME`: Base model identifier (default: "Qwen/Qwen3-8B")
-- `ORACLE_ADAPTER_PATH`: LoRA checkpoint path (required)
-- `ORACLE_ADAPTER_NAME`: Adapter name for set_adapter (required)
-- `ORACLE_ROLLOUT_MODE`: One of {all_target_deterministic, sampled_target_repeats, prompt_only_repeats}
-
-**Target rollout**:
-- `NUM_ROLLOUTS`: Number of target responses to generate (default: 50)
-- `MAX_NEW_TOKENS`: Generation cap for targets (default: 10000)
-- `TARGET_THINKING`: "default" or "off" (controls thinking tag extraction)
-
-**Oracle rollout**:
-- `K_ROLLOUTS`: Max target rollouts to select for oracle stage (used by sampled_target_repeats)
-- `NUM_ORACLE_ROLLOUTS`: Oracle repeats per target or prompt-only (default: 1)
-- `ORACLE_MAX_NEW_TOKENS`: Generation cap for oracle (default: 1000)
-- `ORACLE_INPUT_TYPES`: Comma-separated activation probe types (defaults per mode)
-- `ORACLE_TOKEN_POINT_FILTER`: "all" or "post_prompt" (default: "all")
-
-**Judging**:
-- `JUDGE_INSTRUCTION_PATH`: Jinja2 template filename (default: "strongReject_v5.jinja2")
-- `JUDGE_THINKING`: "default" or "off"
-- `TARGET_JUDGE_BATCH_SIZE`: Batch size for target judging (default: 16)
-- `ORACLE_JUDGE_BATCH_SIZE`: Batch size for oracle judging (default: 16)
-
-**Stage gates**:
-- `RUN_TARGET_ROLLOUTS`: true/false (default: true)
-- `RUN_TARGET_JUDGING`: true/false (default: true; requires RUN_TARGET_ROLLOUTS)
-- `RUN_ORACLE_ROLLOUTS`: true/false (default: true)
-- `RUN_ORACLE_JUDGING`: true/false (default: true; requires RUN_ORACLE_ROLLOUTS)
-
-**Logging & prompts**:
-- `ORACLE_PROMPTS_PATH`: Path to oracle prompt file (default: "prompts/oracle_prompts/default_oracle_prompts.json")
-- `TARGET_PROMPT_OFFSET` & `TARGET_PROMPT_LIMIT`: Dataset slice control
-- `WANDB_RUN_NAME`: Optional run display name
-- `WANDB_SETTING`: "on" or "off"
-
 ## Testing Patterns
 
 Tests use Python's `unittest` framework and mock dependencies when necessary. Key patterns:
 
 - Skip tests if dependencies unavailable: `@unittest.skipIf(condition, reason)`
-- Use `patch()` to mock external calls (transformers, torch, etc.)
+- Use `patch()` / `SimpleNamespace` to mock external calls (transformers, torch, real models)
 - Test isolation: temporary directories for file I/O, mocked models for pipeline tests
 - Integration tests validate cache schema, stage output, and environment variable parsing
 
-Test files in `tests/` correspond to modules:
-- `test_bypass_refusal_pipeline.py`: ExperimentConfig parsing, pipeline stage orchestration
-- `test_oracle_modes.py`: Oracle rollout mode selection and cache path generation
-- `test_cache_utils.py`: Cache directory structure
-- `test_prompt_utils.py`: Prompt loading and key generation
-- `test_compile_strongreject_results.py`: Result aggregation
-- `test_run_parallel_sh.py`: `run_parallel_strongreject_v5.sh` scheduler dry-run and failure handling
-- `test_run_oracle_experiment_sh.py`: `run_oracle_experiment.sh` CLI and preset flags
-
-## Data & Cache Structure
-
-The pipeline generates output under cache directories with structure like:
-```
-target_rollouts_<model>_lora-<adapter>/
-├── prompt_key/
-│   ├── target_rollout_metadata.json
-│   ├── target_rollout_output_*.json
-│   └── judge_*.json
-oracle_rollouts_<mode>_<model>_lora-<adapter>/
-├── prompt_key/
-│   ├── oracle_rollout_metadata.json
-│   ├── oracle_rollout_output_*.json
-│   └── judge_*.json
-```
-
-Cache keys are stable hashes (preview + SHA256) to enable reproducible runs.
-
-## Design Notes
-
-1. **Modular stage gates**: Each pipeline stage (target generation, target judging, oracle generation, oracle judging) can be independently enabled/disabled, enabling flexible experiment designs.
-
-2. **Oracle input flexibility**: Three rollout modes support different oracle use cases—deterministic baselines, statistical repeats, and prompt-only oracle responses.
-
-3. **Distributed support**: Rank-aware caching and broadcast/gather patterns allow scaling across multi-GPU setups.
-
-4. **Deterministic outputs**: Stable cache keys and seed management (where applicable) enable reproducible experiment runs.
-
-5. **Adapter flexibility**: LoRA adapters can be swapped at each stage (target, judge, oracle), enabling composition of multiple fine-tuned models.
+The `tests/` directory has one test module per source module plus the shell-script and
+results-compilation tests. See [ARCHITECTURE.md](ARCHITECTURE.md) §11 for the full per-file
+coverage map. (`test_oracle_chat.py` at the repo root is a standalone GPU smoke test, not part
+of the unittest suite.)

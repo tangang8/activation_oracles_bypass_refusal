@@ -49,7 +49,6 @@ activation_oracles_bypass_refusal/
 ├── run_oracle_experiment.sh          # Main shell entrypoint and preset manager.
 ├── bypass_refusal.py                 # Main Python experiment pipeline.
 ├── run_parallel_strongreject_v5.sh   # Multi-GPU job scheduler for the StrongReject experiment suite.
-├── run_overnight_strongreject_v5.sh  # Simpler sequential overnight runner with OOM retries.
 ├── rollout_utils.py                  # Target rollout generation, response parsing, and target judging.
 ├── oracle_pipeline.py                # Activation extraction, oracle input construction, and oracle generation.
 ├── oracle_rollout_utils.py           # Oracle rollout modes and oracle cache schemas.
@@ -90,16 +89,37 @@ git clone git@github.com:adamkarvonen/activation_oracles
 
 ## Shared Environment
 
-Use one shared virtual environment at the parent folder root:
+Use one shared virtual environment at the parent folder root. It layers this repo's extra
+dependencies on top of the upstream `activation_oracles` locked dependency set.
+
+Quick setup (runs both steps below, safe to re-run):
+
+```bash
+./activation_oracles_bypass_refusal/setup_env.sh
+source .venv/bin/activate
+```
+
+Or manually:
 
 ```bash
 cd <parent-folder>
 python3 -m venv .venv
 source .venv/bin/activate
-uv sync --project activation_oracles --active
+uv sync --project activation_oracles --active                                            # upstream locked stack
+uv pip install -r activation_oracles_bypass_refusal/judge_calibration/requirements.txt   # extras
 ```
 
-This applies the upstream `activation_oracles/uv.lock` dependency set to the active shared environment. Some dependencies are GPU/Linux oriented, so full experiment runs should happen on a CUDA machine.
+The first `uv sync` applies the upstream `activation_oracles/uv.lock` set (torch, transformers,
+peft, …) — the packages that are painful to reproduce, so their exact pins stay authoritative.
+The second step layers this repo's lightweight, pure-Python extras (`openai`, `scikit-learn`,
+`matplotlib`) needed by the judge-calibration pipeline (`judge_calibration/`). Imports from the
+sibling repo work via `sys.path` (see `oracle_pipeline.py`), so `activation_oracles` itself does
+not need to be installed — only its dependencies, which the `uv sync` step provides.
+
+**Note:** `uv sync` reconciles the environment to the upstream lock and will prune anything not
+in it, so re-running `uv sync` drops the extras — re-run the `uv pip install` step (or just
+`setup_env.sh`) afterward. Some dependencies are GPU/Linux oriented, so full experiment runs
+should happen on a CUDA machine.
 
 Create a parent `.env` file when running model experiments:
 
@@ -498,17 +518,16 @@ cache/
 
 ## Multi-GPU and Long Runs
 
-`run_parallel_strongreject_v5.sh` is a dependency-aware GPU job scheduler for the main StrongReject experiment suite. It builds a job queue and greedily assigns ready jobs to GPUs from `GPU_IDS`.
+`run_parallel_strongreject_v5.sh` is a dependency-aware GPU job scheduler for the main StrongReject experiment suite. It builds a job queue and greedily assigns ready jobs to GPUs from `GPU_IDS` (auto-detected from `nvidia-smi` when unset).
 
-Default initial job graph:
+Every stage is sharded the same way: the target-prompt range `[0, TARGET_PROMPT_TOTAL)` is split into `SHARD_COUNT` slices (default `2 × GPU count`; legacy alias `DETERMINISTIC_SHARD_COUNT`), and one job per slice is created for each stage:
 
-- `target_shard_A`: `target_judging_only`, offset `0`, limit `TARGET_PROMPT_SPLIT`
-- `target_shard_B`: `target_judging_only`, offset `TARGET_PROMPT_SPLIT`, limit remainder
-- one `prompt_only_oracle` job per oracle prompt file
-- one `oracle_target_control` job
-- deterministic rollout oracle jobs for every deterministic shard and oracle prompt file
+- `target_shard_<s>`: `target_judging_only`
+- `control_shard_<s>`: `oracle_target_control`
+- `prompt_only_prompt_<p>_shard_<s>`: `prompt_only_oracle`, per oracle prompt file
+- `deterministic_prompt_<p>_shard_<s>`: deterministic rollout oracle, per oracle prompt file
 
-Deterministic jobs depend on the target shard that covers their target prompt offsets. By default, deterministic jobs are split into `DETERMINISTIC_SHARD_COUNT=10` blocks across `TARGET_PROMPT_TOTAL`.
+Target/control/prompt-only shards have no dependencies; each deterministic shard depends on the `target_shard_<s>` covering the same slice. Oracle prompt files are discovered by scanning `ORACLE_PROMPTS_DIR` (default `prompts/oracle_prompts`); set `ORACLE_PROMPTS_PATHS` to override.
 
 Common dry run:
 
@@ -520,8 +539,6 @@ OOM handling is per job:
 
 - target judge ladder: current `TARGET_JUDGE_BATCH_SIZE`, then `32`, `16`, `8`
 - oracle eval/judge ladder: current `ORACLE_EVAL_BATCH_SIZE` and `ORACLE_JUDGE_BATCH_SIZE`, then smaller configured pairs
-
-`run_overnight_strongreject_v5.sh` is a simpler sequential runner for prompt-only oracle and target judging, also with OOM retry ladders.
 
 ## Distributed Execution
 
@@ -812,7 +829,6 @@ Shell syntax checks:
 ```bash
 bash -n run_oracle_experiment.sh
 bash -n run_parallel_strongreject_v5.sh
-bash -n run_overnight_strongreject_v5.sh
 ```
 
 ## Small Smoke Runs

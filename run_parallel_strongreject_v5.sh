@@ -9,20 +9,29 @@ RUN_LABEL="${RUN_LABEL:-parallel_${timestamp}}"
 RUN_ORACLE_EXPERIMENT="${RUN_ORACLE_EXPERIMENT:-./run_oracle_experiment.sh}"
 
 TARGET_PROMPT_TOTAL="${TARGET_PROMPT_TOTAL:-100}"
-TARGET_PROMPT_SPLIT="${TARGET_PROMPT_SPLIT:-50}"
-DETERMINISTIC_SHARD_COUNT="${DETERMINISTIC_SHARD_COUNT:-10}"
+# One shard count applied to EVERY stage (target, prompt-only, control, deterministic).
+# Defaults to 2x the GPU pool once GPU_IDS is resolved; legacy DETERMINISTIC_SHARD_COUNT honored.
+SHARD_COUNT="${SHARD_COUNT:-${DETERMINISTIC_SHARD_COUNT:-}}"
 NUM_ROLLOUTS="${NUM_ROLLOUTS:-50}"
 NUM_ORACLE_ROLLOUTS="${NUM_ORACLE_ROLLOUTS:-50}"
 
-DEFAULT_ORACLE_PROMPTS_PATH="${DEFAULT_ORACLE_PROMPTS_PATH:-prompts/oracle_prompts/default_oracle_prompts.json}"
-SECOND_ORACLE_PROMPTS_PATH="${SECOND_ORACLE_PROMPTS_PATH:-prompts/oracle_prompts/model_answer_min_200_words.json}"
-ORACLE_PROMPTS_PATHS="${ORACLE_PROMPTS_PATHS:-$DEFAULT_ORACLE_PROMPTS_PATH,$SECOND_ORACLE_PROMPTS_PATH}"
+# Oracle prompt files: every *.json in ORACLE_PROMPTS_DIR (sorted for stable ordering).
+# Set ORACLE_PROMPTS_PATHS explicitly (comma-separated) to override the directory scan.
+ORACLE_PROMPTS_DIR="${ORACLE_PROMPTS_DIR:-prompts/oracle_prompts}"
+ORACLE_PROMPTS_PATHS="${ORACLE_PROMPTS_PATHS:-$(find "$ORACLE_PROMPTS_DIR" -maxdepth 1 -type f -name '*.json' 2>/dev/null | sort | paste -sd, - || true)}"
 JUDGE_INSTRUCTION_PATH="${JUDGE_INSTRUCTION_PATH:-strongReject_v5.jinja2}"
 JUDGE_THINKING="${JUDGE_THINKING:-off}"
 LOG_ROOT="${LOG_ROOT:-logs/${RUN_LABEL}}"
 WANDB_SETTING="${WANDB_SETTING:-on}"
 
-GPU_IDS="${GPU_IDS:-0,1,2,3}"
+# GPU pool. An explicit GPU_IDS (e.g. GPU_IDS=0,2) always wins; otherwise auto-detect
+# every visible GPU via nvidia-smi, falling back to a single GPU "0" if that is unavailable.
+detect_gpu_ids() {
+  command -v nvidia-smi >/dev/null 2>&1 || return 0
+  nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | paste -sd, - | tr -d '[:space:]' || true
+}
+GPU_IDS="${GPU_IDS:-$(detect_gpu_ids)}"
+GPU_IDS="${GPU_IDS:-0}"
 
 TARGET_JUDGE_BATCH_SIZE="${TARGET_JUDGE_BATCH_SIZE:-64}"
 ORACLE_EVAL_BATCH_SIZE="${ORACLE_EVAL_BATCH_SIZE:-128}"
@@ -247,6 +256,11 @@ declare -a GPU_ID_ARRAY=()
 IFS=',' read -r -a GPU_ID_ARRAY <<< "$GPU_IDS"
 validate_unique_array "GPU_IDS" "${GPU_ID_ARRAY[@]}"
 
+# Default the shard count to 2x the GPU pool: finer than the pool for load-balancing +
+# OOM-retry granularity, without excessive per-shard model reloads. Non-divisibility is fine —
+# shard offsets use integer math that absorbs the remainder.
+SHARD_COUNT="${SHARD_COUNT:-$(( ${#GPU_ID_ARRAY[@]} * 2 ))}"
+
 declare -a ORACLE_PROMPT_PATH_ARRAY=()
 IFS=',' read -r -a ORACLE_PROMPT_PATH_ARRAY <<< "$ORACLE_PROMPTS_PATHS"
 validate_unique_array "ORACLE_PROMPTS_PATHS" "${ORACLE_PROMPT_PATH_ARRAY[@]}"
@@ -254,16 +268,8 @@ for prompt_path in "${ORACLE_PROMPT_PATH_ARRAY[@]}"; do
   require_file "$prompt_path"
 done
 
-shard_a_offset=0
-shard_a_limit="$TARGET_PROMPT_SPLIT"
-shard_b_offset="$TARGET_PROMPT_SPLIT"
-shard_b_limit=$((TARGET_PROMPT_TOTAL - TARGET_PROMPT_SPLIT))
-
-if (( shard_a_limit < 0 || shard_b_limit < 0 )); then
-  die "TARGET_PROMPT_SPLIT ($TARGET_PROMPT_SPLIT) must be between 0 and TARGET_PROMPT_TOTAL ($TARGET_PROMPT_TOTAL)."
-fi
-if (( DETERMINISTIC_SHARD_COUNT <= 0 )); then
-  die "DETERMINISTIC_SHARD_COUNT must be >= 1."
+if (( SHARD_COUNT <= 0 )); then
+  die "SHARD_COUNT must be >= 1."
 fi
 
 declare -a JOB_ID=()
@@ -470,51 +476,39 @@ log_summary() {
   done
 }
 
-add_job "target_shard_A" "target" "target_judging_only" "$shard_a_offset" "$shard_a_limit" "" "" "target_judge"
-if (( shard_b_limit > 0 )); then
-  add_job "target_shard_B" "target" "target_judging_only" "$shard_b_offset" "$shard_b_limit" "" "" "target_judge"
-fi
-
-add_job "prompt_only_prompt_0" "prompt_only" "prompt_only_oracle" 0 "$TARGET_PROMPT_TOTAL" "${ORACLE_PROMPT_PATH_ARRAY[0]}" "" "oracle_eval_judge"
-add_job "oracle_target_control" "target_control" "oracle_target_control" 0 "$TARGET_PROMPT_TOTAL" "" "" "target_judge"
-for prompt_idx in "${!ORACLE_PROMPT_PATH_ARRAY[@]}"; do
-  if (( prompt_idx == 0 )); then
-    continue
-  fi
-  add_job "prompt_only_prompt_${prompt_idx}" "prompt_only" "prompt_only_oracle" 0 "$TARGET_PROMPT_TOTAL" "${ORACLE_PROMPT_PATH_ARRAY[$prompt_idx]}" "" "oracle_eval_judge"
+# Uniform shard boundaries over the target-prompt range; EVERY stage uses these, so all
+# experiments fan out across the GPU pool the same way. Integer offsets absorb any remainder.
+declare -a SHARD_OFFSET=()
+declare -a SHARD_LIMIT=()
+for ((shard_idx=0; shard_idx<SHARD_COUNT; shard_idx++)); do
+  s_off=$(( (shard_idx * TARGET_PROMPT_TOTAL) / SHARD_COUNT ))
+  s_next=$(( ((shard_idx + 1) * TARGET_PROMPT_TOTAL) / SHARD_COUNT ))
+  s_lim=$(( s_next - s_off ))
+  (( s_lim <= 0 )) && continue   # more shards than prompts: skip the empty tail
+  SHARD_OFFSET[$shard_idx]="$s_off"
+  SHARD_LIMIT[$shard_idx]="$s_lim"
+  # Target judging + control are independent of oracle prompts: one job per shard.
+  add_job "target_shard_${shard_idx}" "target" "target_judging_only" "$s_off" "$s_lim" "" "" "target_judge"
+  add_job "control_shard_${shard_idx}" "target_control" "oracle_target_control" "$s_off" "$s_lim" "" "" "target_judge"
 done
 
+# Prompt-only + deterministic oracle: one job per (oracle prompt, shard). Deterministic depends
+# on the matching target shard (same prompt range); prompt-only needs no target rollouts.
 for prompt_idx in "${!ORACLE_PROMPT_PATH_ARRAY[@]}"; do
-  for ((det_shard_idx=0; det_shard_idx<DETERMINISTIC_SHARD_COUNT; det_shard_idx++)); do
-    det_offset=$(( (det_shard_idx * TARGET_PROMPT_TOTAL) / DETERMINISTIC_SHARD_COUNT ))
-    det_next_offset=$(( ((det_shard_idx + 1) * TARGET_PROMPT_TOTAL) / DETERMINISTIC_SHARD_COUNT ))
-    det_limit=$(( det_next_offset - det_offset ))
-    if (( det_limit <= 0 )); then
-      continue
-    fi
-
-    det_dep="target_shard_A"
-    if (( det_offset >= TARGET_PROMPT_SPLIT )); then
-      if (( shard_b_limit <= 0 )); then
-        die "Deterministic shard offset ${det_offset} requires target_shard_B, but target_shard_B is not configured."
-      fi
-      det_dep="target_shard_B"
-    fi
-
-    add_job "deterministic_shard_${det_shard_idx}_prompt_${prompt_idx}" "deterministic" "$FULL_DETERMINISTIC_PRESET" "$det_offset" "$det_limit" "${ORACLE_PROMPT_PATH_ARRAY[$prompt_idx]}" "$det_dep" "oracle_eval_judge"
+  prompt_path="${ORACLE_PROMPT_PATH_ARRAY[$prompt_idx]}"
+  for ((shard_idx=0; shard_idx<SHARD_COUNT; shard_idx++)); do
+    [[ -n "${SHARD_LIMIT[$shard_idx]:-}" ]] || continue
+    add_job "prompt_only_prompt_${prompt_idx}_shard_${shard_idx}" "prompt_only" "prompt_only_oracle" \
+      "${SHARD_OFFSET[$shard_idx]}" "${SHARD_LIMIT[$shard_idx]}" "$prompt_path" "" "oracle_eval_judge"
+    add_job "deterministic_prompt_${prompt_idx}_shard_${shard_idx}" "deterministic" "$FULL_DETERMINISTIC_PRESET" \
+      "${SHARD_OFFSET[$shard_idx]}" "${SHARD_LIMIT[$shard_idx]}" "$prompt_path" "target_shard_${shard_idx}" "oracle_eval_judge"
   done
 done
 
 log "Parallel run starting. run_label=$RUN_LABEL logs=$LOG_ROOT"
 log "GPU pool: ${GPU_ID_ARRAY[*]}"
-log "Target shard A offset=$shard_a_offset limit=$shard_a_limit"
-if (( shard_b_limit > 0 )); then
-  log "Target shard B offset=$shard_b_offset limit=$shard_b_limit"
-else
-  log "Target shard B omitted because limit=0"
-fi
+log "Shard count (all stages): $SHARD_COUNT over ${TARGET_PROMPT_TOTAL} target prompts"
 log "Full deterministic oracle preset: $FULL_DETERMINISTIC_PRESET"
-log "Deterministic shard count: $DETERMINISTIC_SHARD_COUNT"
 log "Oracle prompt paths: $ORACLE_PROMPTS_PATHS"
 log_job_table
 

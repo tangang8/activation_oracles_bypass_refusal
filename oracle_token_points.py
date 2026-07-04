@@ -174,6 +174,10 @@ def extract_token_points_combined_qwen(
     first_after_think_close = think_close_start + len(think_close_ids)
     if first_after_think_close >= combined_len:
         raise ValueError("No token found after </think> in rollout.")
+    # The token after </think> is the "\n\n" separator; the answer starts one token later.
+    first_answer_token = first_after_think_close + 1
+    if first_answer_token >= combined_len:
+        raise ValueError("No answer token found after </think> separator in rollout.")
 
     token_points = {
         "im_end_token": im_end_start,
@@ -185,6 +189,7 @@ def extract_token_points_combined_qwen(
         "first_rollout_token": prompt_len,
         "think_close_token": think_close_start,
         "first_token_after_think_close": first_after_think_close,
+        "first_answer_token_after_think": first_answer_token,
         "last_rollout_token": combined_len - 1,
     }
     return build_combined_points_spec(

@@ -1,0 +1,5 @@
+# Extra dependencies for the judge-calibration pipeline (on top of the repo's env).
+openai>=1.30        # Step 3: GPT-4o judge
+scikit-learn>=1.3   # Step 4: AUROC / AUPRC / ROC in analyze.py
+matplotlib>=3.7     # optional: ROC plot in analyze.py (skipped if missing)
+# python-dotenv is optional; openai_judge.py has a built-in .env fallback loader.
