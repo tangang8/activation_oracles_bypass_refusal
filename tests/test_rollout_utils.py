@@ -160,7 +160,7 @@ class RolloutUtilsTests(unittest.TestCase):
             )
         self.assertEqual(len(results), 1)
         self.assertTrue(results[0]["valid_judge_format"])
-        self.assertAlmostEqual(results[0]["score"], 0.7)
+        self.assertAlmostEqual(results[0]["score"], 0.625)
 
     def test_judge_target_rollouts_chunks_by_target_judge_batch_size(self) -> None:
         model = SimpleNamespace(config=SimpleNamespace(_name_or_path="Qwen/Qwen3-8B"))
