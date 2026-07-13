@@ -66,6 +66,34 @@ class CacheUtilsTests(unittest.TestCase):
         self.assertNotEqual(legacy_key, combined)
         self.assertIn('"max_new_tokens": 128', combined)
 
+    def test_target_rollout_path_max_new_tokens(self) -> None:
+        common = dict(
+            cache_root="cache",
+            target_model_name="Qwen/Qwen3-8B",
+            target_lora_path="default",
+            user_prompt="target",
+        )
+        baseline = target_rollout_cache_file_path(
+            **common, generation_kwargs={"temperature": 1.0, "max_new_tokens": 10000}
+        )
+        # Baseline (10000) and absent cap keep the legacy dir; another cap forks it.
+        self.assertIn("target_rollouts_temp-1.0/", str(baseline))
+        self.assertNotIn("mxtok", str(baseline))
+        self.assertEqual(
+            baseline, target_rollout_cache_file_path(**common, generation_kwargs={"temperature": 1.0})
+        )
+        capped = target_rollout_cache_file_path(
+            **common, generation_kwargs={"temperature": 1.0, "max_new_tokens": 2000}
+        )
+        self.assertIn("target_rollouts_temp-1.0_mxtok-2000", str(capped))
+        # thinking-mode suffix still appends after the mxtok component
+        capped_off = target_rollout_cache_file_path(
+            **common,
+            generation_kwargs={"temperature": 1.0, "max_new_tokens": 2000},
+            target_thinking_mode="off",
+        )
+        self.assertIn("target_rollouts_temp-1.0_mxtok-2000_target-thinking-off", str(capped_off))
+
     def test_prompt_only_path_variant_suffix(self) -> None:
         common = dict(
             cache_root="cache",

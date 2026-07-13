@@ -750,8 +750,9 @@ truth, imported by both stages. (The broader leaf-vs-assembled param-keying unif
 The judge cache keys on the rubric filename *stem*, so editing the rubric text or the parser reused
 scores computed under the old rule (this is why the score migration was needed). Now each judged leaf
 stores `judge_provenance_sha = hash(rubric_text + _JUDGE_PARSER_VERSION)`, and reuse requires it to
-match — a rubric or formula change auto-invalidates and re-judges. Bump `_JUDGE_PARSER_VERSION`
-(`oracle_judge_utils.py`) whenever the parser/score formula changes.
+match — a rubric or formula change auto-invalidates and re-judges. Bump `JUDGE_PARSER_VERSION`
+(now in `judge_parsing.py`, shared by the target and oracle judges) whenever the parser/score
+formula changes.
 
 **HIGH/MED — StrongReject score was non-canonical (inflated graded numbers). [FIXED]**
 The composite was `(1-refusal)*((spec+conv)/2)/5` on 1–5 Likerts, mapping a minimal non-refusal to
@@ -812,16 +813,19 @@ is absent from the rollout it is located in the prompt (the empty think block) a
 deterministic generator also counts entries whose extraction spec fails to resolve
 (`cache/oracle_spec_unresolved`) instead of swallowing them silently in the backfill path.
 
-**MED — target-judge reuse lacks the oracle side's staleness guards. [OPEN]**
-`judge_target_rollouts` reuses a cached judged entry purely by `rollout_index`: no
-`judged_response_sha` (if the target rollout cache is deleted/regenerated — including the
-corrupt-file → `load_json`-returns-None → silent resample path — old scores pair with new
-responses) and no `judge_provenance_sha` (a rubric edit reuses scores computed under the old
-rule). Port the oracle judge's two hash guards. Related: the *target* rollout dir
-(`target_rollouts_temp-<T>`) still keys only on temperature — apply the §6a mxtok pattern with
-baseline `MAX_NEW_TOKENS=10000` when touching this. Also stringly-typed: judge scoring mode is
-inferred from the rubric filename prefix (`startswith("strongreject")`) in two places — renaming
-the rubric silently switches parsers; fold the mode into config/provenance.
+**MED — target-judge reuse lacks the oracle side's staleness guards. [FIXED]**
+`judge_target_rollouts` now applies the same two hash guards as the oracle judge: a cached score
+is reused only if its `judged_response_sha` matches the current rollout's parsed response text
+(so a regenerated target-rollout cache re-judges instead of pairing old scores with new
+responses) and its `judge_provenance_sha` matches the current rubric+parser. Legacy entries
+lacking the fields are trusted. The shared helpers (`response_sha`, `judge_provenance_sha`,
+`JUDGE_PARSER_VERSION`, `judge_scoring_mode_for_stem`) moved to torch-free `judge_parsing.py`
+with unchanged hash payloads (no cache invalidation); the scoring-mode-from-filename rule now
+has a single definition (renames can't silently reuse anyway — the stem is part of the cache
+path — folding the mode into typed config remains with that refactor). The target rollout dir
+also gained the §6a mxtok pattern: `target_rollouts_temp-<T>[_mxtok-<n>]` with the component
+omitted at the historical baseline (`TARGET_BASELINE_MAX_NEW_TOKENS = 10000`), so existing dirs
+keep their paths and a `MAX_NEW_TOKENS` change forks instead of reusing shorter rollouts.
 
 **LOW — display/quality niceties:** `_compliance_bucket`/`_flatten` scalar fallback (`""` instead of
 raw text), `parse_thinking` dropping pre-`</think>` text when only a close tag is present, invalid

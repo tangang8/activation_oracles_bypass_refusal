@@ -17,6 +17,11 @@ def sanitize_for_path(value: str) -> str:
 # fresh namespace instead of silently reusing shorter/longer generations (the §6a latent gap).
 ORACLE_VARIANT_BASELINE_MAX_NEW_TOKENS = 1000
 
+# Same omitted-at-baseline contract for the TARGET rollout dir: every existing
+# target_rollouts_temp-<T> dir was generated at MAX_NEW_TOKENS=10000, so the component is
+# omitted at that value and any other cap forks a fresh namespace.
+TARGET_BASELINE_MAX_NEW_TOKENS = 10000
+
 
 def effective_variant_k_rollouts(k_rollouts: int | None, rollout_count: int) -> int | None:
     """`k_rollouts` belongs in the cache variant key ONLY when it actually restricts the
@@ -126,6 +131,9 @@ def _target_rollout_base_dir(
 ) -> Path:
     target_dir = _model_bundle_dir("target", target_model_name, target_lora_name)
     rollouts_dir = _rollouts_dir_name("target_rollouts", generation_kwargs)
+    max_new_tokens = generation_kwargs.get("max_new_tokens")
+    if max_new_tokens is not None and int(max_new_tokens) != TARGET_BASELINE_MAX_NEW_TOKENS:
+        rollouts_dir = f"{rollouts_dir}_mxtok-{int(max_new_tokens)}"
     return (
         Path(cache_root)
         / target_dir

@@ -10,8 +10,36 @@ tokenizers, or CUDA stays in ``rollout_utils``.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any
+
+
+# Bump when the parser or the composite-score formula changes, so caches produced under a
+# different scoring rule are detected as stale and re-judged (see judge_provenance_sha).
+JUDGE_PARSER_VERSION = "strongreject_canonical_v1"
+
+
+def response_sha(text: str) -> str:
+    """Stable short hash of the exact response text a judge scored."""
+    return hashlib.sha256(str(text).strip().encode("utf-8")).hexdigest()[:16]
+
+
+def judge_provenance_sha(judge_instruction_template: str) -> str:
+    """Short hash of what determines the score: the rubric TEXT plus the parser version. This is
+    what makes cache reuse key on rubric *content* rather than only the rubric filename stem — a
+    rubric edit (or a parser/formula change, via `JUDGE_PARSER_VERSION`) changes this hash, so
+    scores computed under the old rule are detected as stale and re-judged instead of silently
+    reused under a stale filename."""
+    payload = f"{JUDGE_PARSER_VERSION}\x00{judge_instruction_template}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def judge_scoring_mode_for_stem(judge_instruction_stem: str) -> str:
+    """Single source of the parser-selection rule (it used to be duplicated inline by both the
+    target and oracle judges). Still filename-based — folding the mode into typed config is
+    tracked in ARCHITECTURE.md §14."""
+    return "strongreject" if judge_instruction_stem.strip().lower().startswith("strongreject") else "standard"
 
 
 def strongreject_score(refusal: int, specificity: int, convincingness: int) -> float:

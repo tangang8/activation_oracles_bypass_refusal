@@ -278,6 +278,64 @@ class RolloutUtilsTests(unittest.TestCase):
         self.assertEqual([e["rollout_index"] for e in written["entries"]], [0, 1, 2, 3, 4])
         self.assertEqual(written["entries"][1]["compliance"]["score"], 5)
 
+    def test_judge_target_rollouts_sha_guards_rejudge_changed_response(self) -> None:
+        """A cached score attaches to a response only if its judged_response_sha matches;
+        legacy entries without the field stay trusted (no mass re-judge of old caches)."""
+        model = SimpleNamespace(config=SimpleNamespace(_name_or_path="Qwen/Qwen3-8B"))
+        template = "Prompt: {user_prompt}\nResponse: {model_response}"
+        provenance = ru.judge_provenance_sha(template)
+        existing = [
+            {   # index 0: judged against DIFFERENT text -> must re-judge
+                "rollout_index": 0, "target_prompt": "prompt", "target_response": "old-raw",
+                "target_format": {"response_only": "OLD response"},
+                "compliance": {"score": 1, "judge_skipped": False, "valid_judge_format": True,
+                               "judged_response_sha": ru.response_sha("OLD response"),
+                               "judge_provenance_sha": provenance},
+            },
+            {   # index 1: legacy entry, no sha fields -> trusted
+                "rollout_index": 1, "target_prompt": "prompt", "target_response": "raw-1",
+                "target_format": {"response_only": "response-1"},
+                "compliance": {"score": 2, "judge_skipped": False, "valid_judge_format": True},
+            },
+        ]
+        request = [
+            {"rollout_index": i, "target_prompt": "prompt", "target_response": f"raw-{i}",
+             "target_format": {"response_only": f"response-{i}"}}
+            for i in range(2)
+        ]
+
+        def _fake_score(**kwargs):
+            return [
+                {"score": 5, "reason": "ok", "raw_judgment": "", "response_only": "",
+                 "thinking": "", "judge_skipped": False, "valid_judge_format": True}
+                for _ in kwargs["target_responses"]
+            ]
+
+        with (
+            patch("rollout_utils.judge_cache_file_path", return_value=Path("judge.json")),
+            patch("rollout_utils.load_json", return_value=existing),
+            patch("rollout_utils.write_json"),
+            patch("rollout_utils.score_responses_compliance_batched", side_effect=_fake_score) as score_mock,
+        ):
+            judged, _, _ = ru.judge_target_rollouts(
+                judge_model=model,
+                judge_tokenizer=object(),
+                user_prompt="prompt",
+                target_rollout_entries=request,
+                judge_instruction_template=template,
+                judge_instruction_file="f",
+                judge_instruction_stem="strongReject_v5",
+                device=object(),
+                target_model_name="Qwen/Qwen3-8B",
+                target_lora_path="default",
+            )
+
+        self.assertEqual(score_mock.call_args_list[0].kwargs["target_responses"], ["response-0"])
+        self.assertEqual(judged[0]["compliance"]["score"], 5)  # re-judged
+        self.assertEqual(judged[0]["compliance"]["judged_response_sha"], ru.response_sha("response-0"))
+        self.assertEqual(judged[0]["compliance"]["judge_provenance_sha"], provenance)
+        self.assertEqual(judged[1]["compliance"]["score"], 2)  # legacy trusted
+
     def test_aggregate_compliance_supports_strongreject_scores(self) -> None:
         entries = [
             {"compliance": {"score": 0.0, "score_scale": "strongreject_0_1"}},

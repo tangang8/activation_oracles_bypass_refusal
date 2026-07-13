@@ -20,8 +20,11 @@ from judge_parsing import (  # noqa: F401  (re-exported)
     _extract_strongreject_answer,
     _parse_judge_output,
     _parse_strongreject_judge_output,
+    judge_provenance_sha,
+    judge_scoring_mode_for_stem,
     parse_thinking,
     resolve_judge_enable_thinking,
+    response_sha,
     strongreject_score,
     validate_target_response_format,
 )
@@ -707,8 +710,7 @@ def judge_target_rollouts(
 
     judge_thinking_tag = THINKING_TAG_PATTERNS_BY_MODEL.get(judge_model.config._name_or_path)
     judge_enable_thinking = resolve_judge_enable_thinking(judge_thinking_mode)
-    normalized_judge_stem = judge_instruction_stem.strip().lower()
-    judge_scoring_mode = "strongreject" if normalized_judge_stem.startswith("strongreject") else "standard"
+    judge_scoring_mode = judge_scoring_mode_for_stem(judge_instruction_stem)
     cache_file = judge_cache_file_path(
         cache_root=cache_root,
         target_model_name=target_model_name,
@@ -722,6 +724,8 @@ def judge_target_rollouts(
         user_prompt=user_prompt,
     )
 
+    provenance_sha = judge_provenance_sha(judge_instruction_template)
+    current_by_index = {int(e["rollout_index"]): e for e in target_rollout_entries}
     loaded_entries = load_json(cache_file)
     existing_entries = loaded_entries if isinstance(loaded_entries, list) else []
     existing_by_index: dict[int, dict[str, Any]] = {}
@@ -740,6 +744,19 @@ def judge_target_rollouts(
             # empty parsed response) are re-queued instead of being permanent unscored holes;
             # empty-response entries re-skip locally without a judge call, so this is cheap.
             continue
+        current = current_by_index.get(idx)
+        if current is not None and isinstance(compliance, dict):
+            # Same two staleness guards the oracle judge uses (legacy entries lacking the
+            # fields are trusted): the score must have been computed against THIS response
+            # text (a regenerated target rollout cache re-judges instead of pairing old
+            # scores with new responses) and under the current rubric+parser.
+            stored_response = compliance.get("judged_response_sha")
+            current_response = str(current.get("target_format", {}).get("response_only", ""))
+            if stored_response is not None and stored_response != response_sha(current_response):
+                continue
+            stored_provenance = compliance.get("judge_provenance_sha")
+            if stored_provenance is not None and stored_provenance != provenance_sha:
+                continue
         existing_by_index[idx] = entry
 
     missing_rollouts = [e for e in target_rollout_entries if int(e["rollout_index"]) not in existing_by_index]
@@ -846,6 +863,10 @@ def judge_target_rollouts(
             compliance = {
                 **parsed_judge,
                 "judge_instruction_file": judge_instruction_file,
+                "judged_response_sha": response_sha(
+                    str(entry.get("target_format", {}).get("response_only", ""))
+                ),
+                "judge_provenance_sha": provenance_sha,
             }
             local_judged_entries.append(
                 {

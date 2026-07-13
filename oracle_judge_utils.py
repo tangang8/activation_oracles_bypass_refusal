@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from copy import deepcopy
 from contextlib import nullcontext
 from numbers import Real
@@ -16,16 +15,16 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from cache_utils import deterministic_oracle_judge_cache_file_path, load_json, write_json
 from distributed_utils import DistributedContext, all_gather_objects, broadcast_object
 from perf_utils import PerfLogger
+from judge_parsing import (
+    judge_provenance_sha as _judge_provenance_sha,
+    judge_scoring_mode_for_stem,
+    response_sha as _response_sha,
+)
 from rollout_utils import (
     THINKING_TAG_PATTERNS_BY_MODEL,
     resolve_judge_enable_thinking,
     score_responses_compliance_batched,
 )
-
-
-# Bump when the parser or the composite-score formula changes, so caches produced under a
-# different scoring rule are detected as stale and re-judged (see _judge_provenance_sha).
-_JUDGE_PARSER_VERSION = "strongreject_canonical_v1"
 
 
 def _entry_index(entry: dict[str, Any]) -> int:
@@ -186,21 +185,6 @@ def _compliance_shell(entry: dict[str, Any]) -> dict[str, Any]:
     if isinstance(oracle_response.get("token_points"), dict):
         shell["token_points"] = {str(key): None for key in oracle_response["token_points"].keys()}
     return shell
-
-
-def _response_sha(text: str) -> str:
-    """Stable short hash of the exact response text a judge scored."""
-    return hashlib.sha256(str(text).strip().encode("utf-8")).hexdigest()[:16]
-
-
-def _judge_provenance_sha(judge_instruction_template: str) -> str:
-    """Short hash of what determines the score: the rubric TEXT plus the parser version. This is
-    what makes cache reuse key on rubric *content* rather than only the rubric filename stem — a
-    rubric edit (or a parser/formula change, via `_JUDGE_PARSER_VERSION`) changes this hash, so
-    scores computed under the old rule are detected as stale and re-judged instead of silently
-    reused under a stale filename."""
-    payload = f"{_JUDGE_PARSER_VERSION}\x00{judge_instruction_template}"
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def _reusable_existing_leaf(
@@ -426,8 +410,7 @@ def judge_oracle_rollouts(
 
     judge_thinking_tag = THINKING_TAG_PATTERNS_BY_MODEL.get(judge_model.config._name_or_path)
     judge_enable_thinking = resolve_judge_enable_thinking(judge_thinking_mode)
-    normalized_judge_stem = judge_instruction_stem.strip().lower()
-    judge_scoring_mode = "strongreject" if normalized_judge_stem.startswith("strongreject") else "standard"
+    judge_scoring_mode = judge_scoring_mode_for_stem(judge_instruction_stem)
     can_checkpoint_locally = dist_ctx is None or not dist_ctx.enabled
     local_updates: list[dict[str, Any]] = []
     if local_items:
