@@ -1,5 +1,4 @@
 import os
-import json
 from contextlib import nullcontext
 from time import perf_counter
 from pathlib import Path
@@ -11,6 +10,7 @@ from dotenv import load_dotenv
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.utils import logging as hf_logging
 
+from cache_utils import effective_variant_k_rollouts, oracle_cache_variant_key
 from model_loading_utils import AdapterSpec, load_model_stack
 from distributed_utils import DistributedContext, broadcast_object, cleanup_distributed, init_distributed
 from judge_instruction_utils import load_judge_instruction
@@ -261,23 +261,18 @@ def _oracle_cache_variant_key(
     *,
     target_rollout_entry_count: int | None = None,
 ) -> str | None:
+    """Build the judge-stage variant key via the SAME canonical serializer the oracle stage
+    uses (`cache_utils.oracle_cache_variant_key`), so the judge always reads the namespace the
+    oracle wrote. Only the k_rollouts derivation is stage-specific."""
     k_rollouts = None
     if cfg.oracle_rollout_mode in {"all_target_deterministic", "sampled_target_repeats"}:
         rollout_count = target_rollout_entry_count if target_rollout_entry_count is not None else cfg.num_rollouts
-        k_rollouts = (
-            cfg.k_rollouts
-            if cfg.k_rollouts is not None and cfg.k_rollouts < rollout_count
-            else None
-        )
-    if cfg.oracle_input_types is None and cfg.oracle_token_point_filter == "all" and k_rollouts is None:
-        return None
-    variant = {
-        "oracle_input_types": cfg.oracle_input_types,
-        "oracle_token_point_filter": cfg.oracle_token_point_filter,
-    }
-    if k_rollouts is not None:
-        variant["k_rollouts"] = k_rollouts
-    return json.dumps(variant, sort_keys=True, ensure_ascii=True)
+        k_rollouts = effective_variant_k_rollouts(cfg.k_rollouts, rollout_count)
+    return oracle_cache_variant_key(
+        cfg.oracle_input_types,
+        cfg.oracle_token_point_filter,
+        k_rollouts=k_rollouts,
+    )
 
 
 def _parse_bool(raw: str, *, field_name: str) -> bool:
@@ -316,7 +311,9 @@ def run_pipeline_for_target_prompt(
     judged_rollout_entries: list[dict[str, Any]] = []
     target_cache_file: str | Path | None = None
     judge_cache_file: str | Path | None = None
-    compliance_results: dict[str, Any] = {"compliance_rate": 0.0, "partial_compliance_rate": 0.0, "total": 0}
+    compliance_results: dict[str, Any] = {
+        "compliance_rate": 0.0, "partial_compliance_rate": 0.0, "total": 0, "scored": 0, "unscored": 0,
+    }
 
     if cfg.run_target_rollouts:
         if ctx.is_main:

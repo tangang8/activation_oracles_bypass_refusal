@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import json
 from typing import Any, Literal
 
 import torch
@@ -9,7 +8,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from cache_utils import (
     deterministic_oracle_cache_file_path,
+    effective_variant_k_rollouts,
     load_json,
+    oracle_cache_variant_key,
     oracle_prompt_rollout_cache_file_path,
     write_json,
 )
@@ -59,22 +60,6 @@ PROMPT_ONLY_ORACLE_GENERATION_KWARGS = {
     "temperature": 1.0,
     "max_new_tokens": 1000,
 }
-
-
-def _oracle_cache_variant_key(
-    oracle_input_types: list[str] | None,
-    oracle_token_point_filter: str,
-    k_rollouts: int | None = None,
-) -> str | None:
-    if oracle_input_types is None and oracle_token_point_filter == "all" and k_rollouts is None:
-        return None
-    variant = {
-        "oracle_input_types": oracle_input_types,
-        "oracle_token_point_filter": oracle_token_point_filter,
-    }
-    if k_rollouts is not None:
-        variant["k_rollouts"] = k_rollouts
-    return json.dumps(variant, sort_keys=True, ensure_ascii=True)
 
 
 def parse_oracle_rollout_mode(raw_mode: str | None) -> OracleRolloutMode:
@@ -494,15 +479,10 @@ def generate_deterministic_oracle_rollouts(
         raise ValueError(f"k_rollouts must be > 0 when provided, got {k_rollouts}")
     sorted_targets = sorted(target_rollout_entries, key=lambda entry: int(entry["rollout_index"]))
     selected_targets = sorted_targets[: min(k_rollouts, len(sorted_targets))] if k_rollouts is not None else sorted_targets
-    variant_k_rollouts = (
-        k_rollouts
-        if k_rollouts is not None and k_rollouts < len(sorted_targets)
-        else None
-    )
-    cache_variant_key = _oracle_cache_variant_key(
+    cache_variant_key = oracle_cache_variant_key(
         oracle_input_types if explicit_oracle_input_types else None,
         oracle_token_point_filter,
-        k_rollouts=variant_k_rollouts,
+        k_rollouts=effective_variant_k_rollouts(k_rollouts, len(sorted_targets)),
     )
 
     if not selected_targets:
@@ -745,15 +725,10 @@ def generate_sampled_target_oracle_rollouts(
         selected_targets = sorted_targets[: min(k_rollouts, len(sorted_targets))]
     else:
         selected_targets = sorted_targets
-    variant_k_rollouts = (
-        k_rollouts
-        if k_rollouts is not None and k_rollouts < len(sorted_targets)
-        else None
-    )
-    cache_variant_key = _oracle_cache_variant_key(
+    cache_variant_key = oracle_cache_variant_key(
         oracle_input_types if explicit_oracle_input_types else None,
         oracle_token_point_filter,
-        k_rollouts=variant_k_rollouts,
+        k_rollouts=effective_variant_k_rollouts(k_rollouts, len(sorted_targets)),
     )
 
     if not selected_targets:

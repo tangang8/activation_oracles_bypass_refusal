@@ -40,17 +40,51 @@ class OracleJudgeUtilsTests(unittest.TestCase):
         self.assertIn("token_points", kinds)
         self.assertTrue(all(x["rollout_index"] == 7 for x in flat))
 
-    def test_overlay_existing_compliance_reuse_new_and_stale(self) -> None:
-        # shell mirrors the CURRENT oracle_response (5 token points, all unscored)
-        shell = {"token_points": {n: None for n in ("a", "b", "c", "d", "e")}}
-        # a prior judge run scored a,b,c,d plus a now-removed point "z"
-        existing = {"token_points": {n: {"score": 1.0} for n in ("a", "b", "c", "d", "z")}}
-        oju._overlay_existing_compliance(shell, existing)
-        tp = shell["token_points"]
-        self.assertEqual(tp["a"], {"score": 1.0})              # reused score
-        self.assertIsNone(tp["e"])                              # new point -> stays pending
-        self.assertEqual(set(tp), {"a", "b", "c", "d", "e"})    # keys mirror current oracle_response
-        self.assertNotIn("z", tp)                               # stale point dropped
+    def test_entry_key_is_stable_across_num_oracle_rollouts(self) -> None:
+        # sampled entries key on the explicit (target, oracle) pair, so the identity does NOT move
+        # when num_oracle_rollouts renumbers the flattened rollout_index.
+        n2 = {"target_rollout_index": 1, "oracle_rollout_index": 0, "rollout_index": 2}
+        n3 = {"target_rollout_index": 1, "oracle_rollout_index": 0, "rollout_index": 3}
+        self.assertEqual(oju._entry_key(n2), oju._entry_key(n3))
+        self.assertEqual(oju._entry_key(n2), "t1_o0")
+        # deterministic (rollout_index only) and prompt-only (oracle_rollout_index only)
+        self.assertEqual(oju._entry_key({"rollout_index": 5}), "r5")
+        self.assertEqual(oju._entry_key({"oracle_rollout_index": 4}), "o4")
+
+    def test_reusable_existing_leaf_verifies_response_and_provenance(self) -> None:
+        text = "the model answer"
+        sha = oju._response_sha(text)
+        prov = "prov0123456789ab"
+        existing = {
+            "token_points": {
+                "match": {"score": 1.0, "judged_response_sha": sha, "judge_provenance_sha": prov},
+                "changed_text": {"score": 1.0, "judged_response_sha": "deadbeef00000000", "judge_provenance_sha": prov},
+                "changed_rubric": {"score": 1.0, "judged_response_sha": sha, "judge_provenance_sha": "0000rubricchg000"},
+                "legacy": {"score": 1.0},  # pre-fix leaf, no hashes
+            }
+        }
+        # matching text AND provenance -> reuse
+        self.assertEqual(
+            oju._reusable_existing_leaf(existing, ("token_points", "match"), text, prov),
+            existing["token_points"]["match"],
+        )
+        # different response text -> re-judge
+        self.assertIsNone(oju._reusable_existing_leaf(existing, ("token_points", "changed_text"), text, prov))
+        # same text but rubric/parser changed -> re-judge
+        self.assertIsNone(oju._reusable_existing_leaf(existing, ("token_points", "changed_rubric"), text, prov))
+        # legacy leaf without hashes is trusted (backward compatible)
+        self.assertEqual(
+            oju._reusable_existing_leaf(existing, ("token_points", "legacy"), text, prov),
+            existing["token_points"]["legacy"],
+        )
+        # absent path -> nothing to reuse
+        self.assertIsNone(oju._reusable_existing_leaf(existing, ("token_points", "missing"), text, prov))
+
+    def test_judge_provenance_sha_changes_with_rubric_and_parser(self) -> None:
+        a = oju._judge_provenance_sha("rubric text A")
+        b = oju._judge_provenance_sha("rubric text B")
+        self.assertNotEqual(a, b)                       # rubric edit invalidates
+        self.assertEqual(a, oju._judge_provenance_sha("rubric text A"))  # stable
 
     def test_compliance_shell(self) -> None:
         shell = oju._compliance_shell(

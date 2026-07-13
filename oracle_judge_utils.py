@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from copy import deepcopy
 from contextlib import nullcontext
 from numbers import Real
@@ -22,6 +23,11 @@ from rollout_utils import (
 )
 
 
+# Bump when the parser or the composite-score formula changes, so caches produced under a
+# different scoring rule are detected as stale and re-judged (see _judge_provenance_sha).
+_JUDGE_PARSER_VERSION = "strongreject_canonical_v1"
+
+
 def _entry_index(entry: dict[str, Any]) -> int:
     if "rollout_index" in entry:
         return int(entry["rollout_index"])
@@ -30,8 +36,27 @@ def _entry_index(entry: dict[str, Any]) -> int:
     raise KeyError("Entry is missing both rollout_index and oracle_rollout_index.")
 
 
+def _entry_key(entry: dict[str, Any]) -> str:
+    """Stable identity for judge-score reuse.
+
+    Prefer the explicit `(target_rollout_index, oracle_rollout_index)` pair so the key does NOT
+    shift when `num_oracle_rollouts` changes the flattened `rollout_index` (the arithmetic index
+    `target*N + oracle` was the root of scores attaching to the wrong response). Deterministic and
+    prompt-only entries are already 1:1 and stable, so their single index is used directly."""
+    target_idx = entry.get("target_rollout_index")
+    oracle_idx = entry.get("oracle_rollout_index")
+    if target_idx is not None and oracle_idx is not None:
+        return f"t{int(target_idx)}_o{int(oracle_idx)}"
+    if "rollout_index" in entry:
+        return f"r{int(entry['rollout_index'])}"
+    if oracle_idx is not None:
+        return f"o{int(oracle_idx)}"
+    raise KeyError("Entry is missing rollout identity fields.")
+
+
 def _flatten_oracle_responses(entry: dict[str, Any]) -> list[dict[str, Any]]:
     rollout_index = _entry_index(entry)
+    entry_key = _entry_key(entry)
     source_index_label = "rollout_index" if "rollout_index" in entry else "oracle_rollout_index"
     user_prompt = str(entry.get("target_prompt", ""))
     oracle_response = entry.get("oracle_response", {})
@@ -49,6 +74,7 @@ def _flatten_oracle_responses(entry: dict[str, Any]) -> list[dict[str, Any]]:
         flattened.append(
             {
                 "rollout_index": rollout_index,
+                "entry_key": entry_key,
                 "source_index_label": source_index_label,
                 "path": (probe_kind,),
                 "probe_kind": probe_kind,
@@ -160,28 +186,57 @@ def _compliance_shell(entry: dict[str, Any]) -> dict[str, Any]:
     return shell
 
 
-def _overlay_existing_compliance(shell: dict[str, Any], existing: Any) -> None:
-    """Copy already-computed compliance scores from a prior judge entry onto a fresh shell
-    (which mirrors the current oracle_response). Only paths present in the shell are filled, so
-    reused scores are kept, new probes stay None (→ judged), and stale probes are dropped."""
-    if not isinstance(existing, dict):
-        return
-    for key, shell_val in shell.items():
-        ex_val = existing.get(key)
-        if isinstance(shell_val, dict):
-            # tokens / token_points buckets: copy scored leaves that still exist
-            if isinstance(ex_val, dict):
-                for sub in shell_val:
-                    if isinstance(ex_val.get(sub), dict):
-                        shell_val[sub] = deepcopy(ex_val[sub])
-        elif isinstance(ex_val, dict):
-            # scalar probe leaf (full_seq/segment/...): copy existing score
-            shell[key] = deepcopy(ex_val)
+def _response_sha(text: str) -> str:
+    """Stable short hash of the exact response text a judge scored."""
+    return hashlib.sha256(str(text).strip().encode("utf-8")).hexdigest()[:16]
+
+
+def _judge_provenance_sha(judge_instruction_template: str) -> str:
+    """Short hash of what determines the score: the rubric TEXT plus the parser version. This is
+    what makes cache reuse key on rubric *content* rather than only the rubric filename stem — a
+    rubric edit (or a parser/formula change, via `_JUDGE_PARSER_VERSION`) changes this hash, so
+    scores computed under the old rule are detected as stale and re-judged instead of silently
+    reused under a stale filename."""
+    payload = f"{_JUDGE_PARSER_VERSION}\x00{judge_instruction_template}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _reusable_existing_leaf(
+    existing_compliance: Any,
+    path: tuple[str, ...],
+    response_text: str,
+    provenance_sha: str,
+) -> dict[str, Any] | None:
+    """Return a prior compliance leaf ONLY if it is safe to reuse.
+
+    Two guards, both required when present on the leaf:
+      * `judged_response_sha` must match this response's hash — closes the bug where a leaf keyed
+        only by `(rollout_index, path)` was overlaid onto a *different* response (e.g. after
+        `num_oracle_rollouts` changed the flattened index, or the probe cache regenerated
+        different sampled text).
+      * `judge_provenance_sha` must match the current rubric+parser — so a rubric/formula change
+        re-judges rather than reusing a score computed under a different rule.
+    Legacy leaves written before these fields existed lack them and are trusted, so pre-fix caches
+    don't force a full re-judge (the score migration already re-derived their values under the
+    current formula); delete the judge cache to force a clean re-score if a run needs it."""
+    if not isinstance(existing_compliance, dict):
+        return None
+    leaf = _get_path_leaf(existing_compliance, path)
+    if not isinstance(leaf, dict):
+        return None
+    stored_response = leaf.get("judged_response_sha")
+    if stored_response is not None and stored_response != _response_sha(response_text):
+        return None
+    stored_provenance = leaf.get("judge_provenance_sha")
+    if stored_provenance is not None and stored_provenance != provenance_sha:
+        return None
+    return leaf
 
 
 def _oracle_judge_summary(judged_entries: list[dict[str, Any]]) -> dict[str, Any]:
     by_probe: dict[str, list[float]] = {}
     total_scored = 0
+    total_unscored = 0
     for entry in judged_entries:
         compliance = entry.get("compliance", {})
         flattened = []
@@ -201,8 +256,15 @@ def _oracle_judge_summary(judged_entries: list[dict[str, Any]]) -> dict[str, Any
             if isinstance(score, Real) and not isinstance(score, bool):
                 by_probe.setdefault(probe_kind, []).append(float(score))
                 total_scored += 1
+            else:
+                # Leaf present but no numeric score (judge-skipped/malformed): surface it as a
+                # count instead of letting the probe silently vanish from the averages.
+                total_unscored += 1
 
-    summary: dict[str, Any] = {"oracle_judge/total_scored": float(total_scored)}
+    summary: dict[str, Any] = {
+        "oracle_judge/total_scored": float(total_scored),
+        "oracle_judge/total_unscored": float(total_unscored),
+    }
     for probe_kind, scores in by_probe.items():
         if scores:
             summary[f"oracle_judge/{probe_kind}_avg_score"] = float(sum(scores)) / float(len(scores))
@@ -212,29 +274,29 @@ def _oracle_judge_summary(judged_entries: list[dict[str, Any]]) -> dict[str, Any
 
 def _apply_oracle_judge_updates(
     *,
-    merged_by_index: dict[int, dict[str, Any]],
+    merged_by_key: dict[str, dict[str, Any]],
     updates: list[dict[str, Any]],
 ) -> None:
     for update in updates:
-        idx = int(update["rollout_index"])
-        if idx not in merged_by_index:
+        key = str(update["entry_key"])
+        if key not in merged_by_key:
             continue
-        compliance_root = merged_by_index[idx].setdefault("compliance", {})
+        compliance_root = merged_by_key[key].setdefault("compliance", {})
         if not isinstance(compliance_root, dict):
             compliance_root = {}
-            merged_by_index[idx]["compliance"] = compliance_root
+            merged_by_key[key]["compliance"] = compliance_root
         _set_path_leaf(compliance_root, tuple(update["path"]), update["compliance"])
 
 
 def _materialize_oracle_judge_entries(
     *,
     oracle_rollout_entries: list[dict[str, Any]],
-    merged_by_index: dict[int, dict[str, Any]],
+    merged_by_key: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     return [
-        merged_by_index[_entry_index(entry)]
+        merged_by_key[_entry_key(entry)]
         for entry in sorted(oracle_rollout_entries, key=_entry_index)
-        if _entry_index(entry) in merged_by_index
+        if _entry_key(entry) in merged_by_key
     ]
 
 
@@ -286,22 +348,27 @@ def judge_oracle_rollouts(
         cache_variant_key=oracle_cache_variant_key,
     )
 
+    provenance_sha = _judge_provenance_sha(judge_instruction_template)
+
     loaded = load_json(cache_file)
     existing_entries = loaded if isinstance(loaded, list) else []
-    existing_by_index: dict[int, dict[str, Any]] = {}
+    # Keyed by stable entry identity (_entry_key), NOT the flattened numeric rollout_index, so a
+    # cached score can only be reused for the same (target, oracle) rollout even if a changed
+    # num_oracle_rollouts renumbered rollout_index.
+    existing_by_key: dict[str, dict[str, Any]] = {}
     for entry in existing_entries:
         if not isinstance(entry, dict):
             continue
         try:
-            idx = _entry_index(entry)
+            key = _entry_key(entry)
         except Exception:
             continue
-        existing_by_index[idx] = entry
+        existing_by_key[key] = entry
 
-    merged_by_index: dict[int, dict[str, Any]] = {}
+    merged_by_key: dict[str, dict[str, Any]] = {}
     pending_items: list[dict[str, Any]] = []
     for oracle_entry in oracle_rollout_entries:
-        idx = _entry_index(oracle_entry)
+        entry_key = _entry_key(oracle_entry)
         # Base the merged entry on the CURRENT oracle entry, so oracle_response / oracle_points /
         # oracle_format always reflect the latest oracle output (which may have gained token
         # points via backfill). Carry over already-computed compliance scores from any existing
@@ -309,18 +376,21 @@ def judge_oracle_rollouts(
         # pending. (Basing on the stale existing entry left oracle_response with fewer points than
         # compliance had scores for.)
         base_entry = deepcopy(oracle_entry)
-        existing_entry = existing_by_index.get(idx)
+        existing_entry = existing_by_key.get(entry_key)
         existing_compliance = existing_entry.get("compliance") if isinstance(existing_entry, dict) else None
-        # Build compliance mirroring the CURRENT oracle_response so its probe set always matches,
-        # reusing already-computed scores for probes that still exist (new ones stay None → pending,
-        # stale ones are dropped).
+        # Build compliance mirroring the CURRENT oracle_response so its probe set always matches.
+        # For each probe, reuse a prior score only if it was computed against this exact response
+        # text AND the current rubric+parser (verified by hash); otherwise the probe is (re-)judged.
+        # New probes stay None → pending, stale probes are dropped (not in the current shell).
         compliance = _compliance_shell(oracle_entry)
-        _overlay_existing_compliance(compliance, existing_compliance)
         base_entry["compliance"] = compliance
-        merged_by_index[idx] = base_entry
+        merged_by_key[entry_key] = base_entry
         for item in _flatten_oracle_responses(oracle_entry):
-            existing_leaf = _get_path_leaf(base_entry["compliance"], item["path"])
-            if isinstance(existing_leaf, dict):
+            reusable = _reusable_existing_leaf(
+                existing_compliance, item["path"], item["response_text"], provenance_sha
+            )
+            if reusable is not None:
+                _set_path_leaf(compliance, item["path"], deepcopy(reusable))
                 continue
             pending_items.append(item)
 
@@ -404,6 +474,8 @@ def judge_oracle_rollouts(
                                 **compliance,
                                 "judge_instruction_file": judge_instruction_file,
                                 "probe_kind": item["probe_kind"],
+                                "judged_response_sha": _response_sha(item["response_text"]),
+                                "judge_provenance_sha": provenance_sha,
                             }
                             if "token_index" in item:
                                 payload["token_index"] = item["token_index"]
@@ -411,6 +483,7 @@ def judge_oracle_rollouts(
                                 payload["token_point_name"] = item["token_point_name"]
                             chunk_updates.append(
                                 {
+                                    "entry_key": item["entry_key"],
                                     "rollout_index": item["rollout_index"],
                                     "path": list(item["path"]),
                                     "compliance": payload,
@@ -419,12 +492,12 @@ def judge_oracle_rollouts(
                         local_updates.extend(chunk_updates)
                         if can_checkpoint_locally and chunk_updates:
                             _apply_oracle_judge_updates(
-                                merged_by_index=merged_by_index,
+                                merged_by_key=merged_by_key,
                                 updates=chunk_updates,
                             )
                             checkpoint_entries = _materialize_oracle_judge_entries(
                                 oracle_rollout_entries=oracle_rollout_entries,
-                                merged_by_index=merged_by_index,
+                                merged_by_key=merged_by_key,
                             )
                             write_json(cache_file, checkpoint_entries)
                         completed_rollouts = 0
@@ -453,12 +526,12 @@ def judge_oracle_rollouts(
             if not isinstance(updates, list):
                 continue
             _apply_oracle_judge_updates(
-                merged_by_index=merged_by_index,
+                merged_by_key=merged_by_key,
                 updates=updates,
             )
         final_entries = _materialize_oracle_judge_entries(
             oracle_rollout_entries=oracle_rollout_entries,
-            merged_by_index=merged_by_index,
+            merged_by_key=merged_by_key,
         )
         write_json(cache_file, final_entries)
 

@@ -10,6 +10,40 @@ def sanitize_for_path(value: str) -> str:
     return cleaned.strip("._-") or "unknown"
 
 
+def effective_variant_k_rollouts(k_rollouts: int | None, rollout_count: int) -> int | None:
+    """`k_rollouts` belongs in the cache variant key ONLY when it actually restricts the
+    selected set (k < available rollouts). When k covers everything it's a no-op, and folding
+    it in would fork a redundant, non-matching cache namespace. This is the single definition
+    of that rule — the oracle generators and the judge stage must agree on it or the judge
+    reads a different namespace than the oracle wrote."""
+    if k_rollouts is not None and k_rollouts < rollout_count:
+        return k_rollouts
+    return None
+
+
+def oracle_cache_variant_key(
+    oracle_input_types: list[str] | None,
+    oracle_token_point_filter: str,
+    k_rollouts: int | None = None,
+) -> str | None:
+    """Canonical serialization of the oracle cache "variant" (the probe-config axis that
+    namespaces assembled oracle + oracle-judge caches). Returns None when no variant filtering
+    applies (default input types, `all` filter, no effective k) so the default namespace is used.
+
+    Single source of truth: both the oracle rollout stage (writer) and the oracle judge stage
+    (reader) build the variant key here, so they cannot drift out of sync. Pass k_rollouts
+    already reduced via `effective_variant_k_rollouts`."""
+    if oracle_input_types is None and oracle_token_point_filter == "all" and k_rollouts is None:
+        return None
+    variant: dict[str, Any] = {
+        "oracle_input_types": oracle_input_types,
+        "oracle_token_point_filter": oracle_token_point_filter,
+    }
+    if k_rollouts is not None:
+        variant["k_rollouts"] = k_rollouts
+    return json.dumps(variant, sort_keys=True, ensure_ascii=True)
+
+
 def preview_hash_name(
     text: str,
     *,

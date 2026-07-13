@@ -7,9 +7,11 @@ from pathlib import Path
 from cache_utils import (
     deterministic_oracle_cache_file_path,
     deterministic_oracle_judge_cache_file_path,
+    effective_variant_k_rollouts,
     judge_cache_file_path,
     load_json,
     oracle_cache_file_path,
+    oracle_cache_variant_key,
     oracle_prompt_rollout_cache_file_path,
     preview_hash_name,
     sanitize_for_path,
@@ -23,6 +25,26 @@ class CacheUtilsTests(unittest.TestCase):
         self.assertEqual(sanitize_for_path("Qwen/Qwen3-8B"), "Qwen_Qwen3-8B")
         self.assertEqual(sanitize_for_path("  hello world!!  "), "hello_world")
         self.assertEqual(sanitize_for_path("!!!"), "unknown")
+
+    def test_effective_variant_k_rollouts(self) -> None:
+        # k belongs in the key only when it actually restricts the set
+        self.assertEqual(effective_variant_k_rollouts(5, 50), 5)   # k < count -> keep
+        self.assertIsNone(effective_variant_k_rollouts(50, 50))    # k == count -> no-op
+        self.assertIsNone(effective_variant_k_rollouts(80, 50))    # k > count -> no-op
+        self.assertIsNone(effective_variant_k_rollouts(None, 50))  # unset
+
+    def test_oracle_cache_variant_key_single_source(self) -> None:
+        # default axis -> None (default namespace)
+        self.assertIsNone(oracle_cache_variant_key(None, "all", None))
+        # any non-default component -> stable, sorted JSON
+        key = oracle_cache_variant_key(["rollout_segment", "token_points"], "post_prompt", 5)
+        self.assertEqual(
+            key,
+            '{"k_rollouts": 5, "oracle_input_types": ["rollout_segment", "token_points"], '
+            '"oracle_token_point_filter": "post_prompt"}',
+        )
+        # k omitted from the dict when None even if other axes set
+        self.assertNotIn("k_rollouts", oracle_cache_variant_key(None, "post_prompt", None))
 
     def test_preview_hash_name_respects_lengths(self) -> None:
         key = preview_hash_name("abcdef", preview_len=3, hash_len=12)
