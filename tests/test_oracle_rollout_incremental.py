@@ -28,7 +28,7 @@ def _fake_full_result(_prompt: str, response: str, points: dict[str, int]) -> di
     return {
         "full_seq": [f"FS::{response}"],
         "segment": [],
-        "prompt_segment": [],
+        "prompt_segment": [f"PS::{response}"],
         "rollout_segment": [f"RS::{response}"],
         "tokens": {},
         "token_points": {idx: [f"TP{idx}::{response}"] for idx in points.values()},
@@ -173,6 +173,136 @@ class DeterministicIncrementalTokenPointTests(unittest.TestCase):
             _, _, stats3 = self._run()
             self.assertEqual(rob.call_count, 0)
             self.assertEqual(stats3["cache/oracle_incomplete"], 0.0)
+
+    def test_stale_scalar_probe_triggers_full_regen_of_that_entry(self) -> None:
+        points = {"a": 1}
+
+        def _spec():
+            return {"token_points": dict(points),
+                    "token_point_indices": sorted(points.values()),
+                    "token_point_str": {n: f"str_{n}" for n in points}}
+
+        with mock.patch.object(oru, "format_user_target_prompt", return_value="FP"), \
+             mock.patch.object(oru, "run_oracle_batched") as rob, \
+             mock.patch.object(oru, "_required_combined_spec") as req:
+            req.return_value = _spec()
+            rob.side_effect = lambda **kw: [
+                _fake_full_result("FP", r, points) for r in kw["target_responses"]
+            ]
+            entries1, cache_file, _ = self._run()
+            self.assertEqual(len(entries1), 2)
+
+            # Simulate a legacy/incomplete cached entry: rollout 0 lost its rollout_segment
+            # decode (old writer emitted "" for probes the run never generated).
+            on_disk = load_json(Path(cache_file))
+            on_disk[0]["oracle_response"]["rollout_segment"] = ""
+            import json
+            Path(cache_file).write_text(json.dumps(on_disk))
+
+            rob.reset_mock()
+            entries2, _, stats2 = self._run()
+            # Only the stale entry is regenerated, with the FULL probe set.
+            self.assertEqual(rob.call_count, 1)
+            call = rob.call_args.kwargs
+            self.assertEqual(call["target_responses"], ["R0"])
+            self.assertEqual(
+                call["oracle_input_types"],
+                ["full_seq", "prompt_segment", "rollout_segment", "token_points"],
+            )
+            self.assertEqual(stats2["cache/oracle_missing"], 1.0)
+            self.assertTrue(entries2[0]["oracle_response"]["rollout_segment"].startswith("RS::"))
+            self.assertTrue(entries2[1]["oracle_response"]["rollout_segment"].startswith("RS::"))
+
+
+@unittest.skipIf(not _IMPORT_OK, "oracle_rollout_utils dependencies unavailable")
+class PromptOnlySparseReuseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cache_root = self.tmp.name
+        self.model = SimpleNamespace(config=SimpleNamespace(_name_or_path="test/model"))
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _run(self, num_oracle_rollouts: int):
+        return oru.generate_prompt_only_oracle_rollouts(
+            model=self.model,
+            tokenizer=object(),
+            device="cpu",
+            oracle_prompt="OP",
+            target_prompt="P",
+            target_model_name="test/model",
+            target_lora_path=None,
+            num_oracle_rollouts=num_oracle_rollouts,
+            oracle_lora_path="oracle",
+            cache_root=self.cache_root,
+        )
+
+    def test_sparse_cached_indices_do_not_short_circuit(self) -> None:
+        """A cache holding indices {0, 2} must NOT satisfy a request for 2 rollouts: the old
+        count-based check returned only entry 0 (fewer entries than requested, silently)."""
+        from cache_utils import oracle_prompt_rollout_cache_file_path, write_json
+
+        cache_file = oracle_prompt_rollout_cache_file_path(
+            cache_root=self.cache_root,
+            target_model_name="test/model",
+            target_lora_path=None,
+            oracle_model_name="test/model",
+            oracle_lora_path="oracle",
+            oracle_generation_kwargs={"do_sample": True, "temperature": 1.0, "max_new_tokens": 1000},
+            target_prompt="P",
+            oracle_prompt="OP",
+        )
+        stale = [
+            {"oracle_rollout_index": i, "target_prompt": "P",
+             "oracle_response": {"full_seq": f"OLD{i}", "tokens": {}, "token_points": {}}}
+            for i in (0, 2)
+        ]
+        write_json(cache_file, stale)
+
+        combined = {
+            "full_seq": ["NEW0", "NEW1"],
+            "tokens": {},
+            "token_points": {},
+            "points": {"token_points": {}},
+            "oracle_repeats": 2,
+        }
+        with mock.patch.object(oru, "format_user_target_prompt", return_value="FP"), \
+             mock.patch.object(oru, "run_oracle_batched", return_value=[combined]) as rob:
+            entries, _, stats = self._run(num_oracle_rollouts=2)
+
+        self.assertEqual(rob.call_count, 1)  # regenerated, not served sparsely
+        self.assertEqual([e["oracle_rollout_index"] for e in entries], [0, 1])
+        self.assertEqual([e["oracle_response"]["full_seq"] for e in entries], ["NEW0", "NEW1"])
+        self.assertEqual(stats["cache/oracle_missing"], 1.0)  # index 1 was the hole
+
+    def test_contiguous_complete_cache_short_circuits(self) -> None:
+        from cache_utils import oracle_prompt_rollout_cache_file_path, write_json
+
+        cache_file = oracle_prompt_rollout_cache_file_path(
+            cache_root=self.cache_root,
+            target_model_name="test/model",
+            target_lora_path=None,
+            oracle_model_name="test/model",
+            oracle_lora_path="oracle",
+            oracle_generation_kwargs={"do_sample": True, "temperature": 1.0, "max_new_tokens": 1000},
+            target_prompt="P",
+            oracle_prompt="OP",
+        )
+        cached = [
+            {"oracle_rollout_index": i, "target_prompt": "P",
+             "oracle_response": {"full_seq": f"C{i}", "tokens": {}, "token_points": {}}}
+            for i in (0, 1)
+        ]
+        write_json(cache_file, cached)
+
+        with mock.patch.object(oru, "format_user_target_prompt", return_value="FP"), \
+             mock.patch.object(oru, "run_oracle_batched") as rob:
+            rob.side_effect = AssertionError("must not regenerate a complete contiguous cache")
+            entries, _, stats = self._run(num_oracle_rollouts=2)
+
+        self.assertEqual([e["oracle_response"]["full_seq"] for e in entries], ["C0", "C1"])
+        self.assertEqual(stats["cache/oracle_hits"], 2.0)
 
 
 if __name__ == "__main__":

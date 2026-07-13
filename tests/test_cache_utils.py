@@ -46,6 +46,47 @@ class CacheUtilsTests(unittest.TestCase):
         # k omitted from the dict when None even if other axes set
         self.assertNotIn("k_rollouts", oracle_cache_variant_key(None, "post_prompt", None))
 
+    def test_oracle_cache_variant_key_max_new_tokens(self) -> None:
+        # The 1000 baseline is omitted, so pre-existing on-disk namespaces are preserved.
+        self.assertIsNone(oracle_cache_variant_key(None, "all", None, max_new_tokens=1000))
+        self.assertIsNone(oracle_cache_variant_key(None, "all", None, max_new_tokens=None))
+        legacy_key = oracle_cache_variant_key(["rollout_segment", "token_points"], "post_prompt", 5)
+        self.assertEqual(
+            legacy_key,
+            oracle_cache_variant_key(
+                ["rollout_segment", "token_points"], "post_prompt", 5, max_new_tokens=1000
+            ),
+        )
+        # A non-baseline cap forks the namespace — alone or combined with other axes.
+        solo = oracle_cache_variant_key(None, "all", None, max_new_tokens=128)
+        self.assertIn('"max_new_tokens": 128', solo)
+        combined = oracle_cache_variant_key(
+            ["rollout_segment", "token_points"], "post_prompt", 5, max_new_tokens=128
+        )
+        self.assertNotEqual(legacy_key, combined)
+        self.assertIn('"max_new_tokens": 128', combined)
+
+    def test_prompt_only_path_variant_suffix(self) -> None:
+        common = dict(
+            cache_root="cache",
+            target_model_name="Qwen/Qwen3-8B",
+            target_lora_path="default",
+            oracle_model_name="Qwen/Qwen3-8B",
+            oracle_lora_path="oracle",
+            oracle_generation_kwargs={"temperature": 1.0},
+            target_prompt="target",
+            oracle_prompt="oracle",
+        )
+        default_path = oracle_prompt_rollout_cache_file_path(**common)
+        # No variant -> unchanged legacy path (existing prompt-only caches stay reachable).
+        self.assertEqual(default_path, oracle_prompt_rollout_cache_file_path(**common, cache_variant_key=None))
+        variant_path = oracle_prompt_rollout_cache_file_path(
+            **common, cache_variant_key='{"max_new_tokens": 128}'
+        )
+        self.assertNotEqual(default_path, variant_path)
+        self.assertIn("__", variant_path.name)
+        self.assertEqual(variant_path.parent, default_path.parent)
+
     def test_preview_hash_name_respects_lengths(self) -> None:
         key = preview_hash_name("abcdef", preview_len=3, hash_len=12)
         preview, digest = key.rsplit("_", 1)

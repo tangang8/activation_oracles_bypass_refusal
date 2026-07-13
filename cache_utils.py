@@ -10,6 +10,14 @@ def sanitize_for_path(value: str) -> str:
     return cleaned.strip("._-") or "unknown"
 
 
+# Baseline oracle generation length for the assembled cache variant key. `max_new_tokens` is
+# folded into the variant key ONLY when it differs from this value: every assembled cache file
+# on disk was generated under the 1000-token regime with no length component in its path, so
+# "omitted == 1000" is part of the on-disk contract. Changing ORACLE_MAX_NEW_TOKENS forks a
+# fresh namespace instead of silently reusing shorter/longer generations (the §6a latent gap).
+ORACLE_VARIANT_BASELINE_MAX_NEW_TOKENS = 1000
+
+
 def effective_variant_k_rollouts(k_rollouts: int | None, rollout_count: int) -> int | None:
     """`k_rollouts` belongs in the cache variant key ONLY when it actually restricts the
     selected set (k < available rollouts). When k covers everything it's a no-op, and folding
@@ -25,15 +33,29 @@ def oracle_cache_variant_key(
     oracle_input_types: list[str] | None,
     oracle_token_point_filter: str,
     k_rollouts: int | None = None,
+    max_new_tokens: int | None = None,
 ) -> str | None:
     """Canonical serialization of the oracle cache "variant" (the probe-config axis that
     namespaces assembled oracle + oracle-judge caches). Returns None when no variant filtering
-    applies (default input types, `all` filter, no effective k) so the default namespace is used.
+    applies (default input types, `all` filter, no effective k, baseline generation length) so
+    the default namespace is used.
 
     Single source of truth: both the oracle rollout stage (writer) and the oracle judge stage
     (reader) build the variant key here, so they cannot drift out of sync. Pass k_rollouts
-    already reduced via `effective_variant_k_rollouts`."""
-    if oracle_input_types is None and oracle_token_point_filter == "all" and k_rollouts is None:
+    already reduced via `effective_variant_k_rollouts`. `max_new_tokens` is folded in only when
+    it differs from ORACLE_VARIANT_BASELINE_MAX_NEW_TOKENS (see that constant for why), so the
+    assembled caches self-invalidate when the oracle generation length changes."""
+    effective_max_new_tokens = (
+        int(max_new_tokens)
+        if max_new_tokens is not None and int(max_new_tokens) != ORACLE_VARIANT_BASELINE_MAX_NEW_TOKENS
+        else None
+    )
+    if (
+        oracle_input_types is None
+        and oracle_token_point_filter == "all"
+        and k_rollouts is None
+        and effective_max_new_tokens is None
+    ):
         return None
     variant: dict[str, Any] = {
         "oracle_input_types": oracle_input_types,
@@ -41,6 +63,8 @@ def oracle_cache_variant_key(
     }
     if k_rollouts is not None:
         variant["k_rollouts"] = k_rollouts
+    if effective_max_new_tokens is not None:
+        variant["max_new_tokens"] = effective_max_new_tokens
     return json.dumps(variant, sort_keys=True, ensure_ascii=True)
 
 
@@ -85,6 +109,13 @@ def _optional_mode_suffix(prefix: str, mode: str, *, default_mode: str = "defaul
 
 def _cache_prompt_file_name(prompt_text: str) -> str:
     return f"{preview_hash_name(prompt_text, preview_len=48, hash_len=16)}.json"
+
+
+def _variant_suffix(cache_variant_key: str | None) -> str:
+    if not cache_variant_key:
+        return ""
+    variant_hash = hashlib.sha256(cache_variant_key.encode("utf-8")).hexdigest()[:12]
+    return f"__{variant_hash}"
 
 
 def _target_rollout_base_dir(
@@ -283,11 +314,7 @@ def deterministic_oracle_cache_file_path(
         lora_path=oracle_lora_path,
     )
     target_prompt_dir = _preview_hash_name(target_prompt)
-    variant_suffix = ""
-    if cache_variant_key:
-        variant_hash = hashlib.sha256(cache_variant_key.encode("utf-8")).hexdigest()[:12]
-        variant_suffix = f"__{variant_hash}"
-    oracle_file = f"{_preview_hash_name(oracle_prompt)}{variant_suffix}.json"
+    oracle_file = f"{_preview_hash_name(oracle_prompt)}{_variant_suffix(cache_variant_key)}.json"
     return (
         Path(cache_root)
         / target_dir
@@ -307,6 +334,7 @@ def oracle_prompt_rollout_cache_file_path(
     oracle_generation_kwargs: dict[str, Any],
     target_prompt: str,
     oracle_prompt: str,
+    cache_variant_key: str | None = None,
 ) -> Path:
     """
     Build prompt-only oracle rollout cache file path.
@@ -314,7 +342,7 @@ def oracle_prompt_rollout_cache_file_path(
     Layout:
       cache/target_{target_model}[_lora-{target_lora}]/
       oracle_prompt_rollouts_temp-{temperature}/oracle_{oracle_model}[_lora-{oracle_lora}]/
-      {target_prompt_preview_hash}/{oracle_prompt_preview_hash}.json
+      {target_prompt_preview_hash}/{oracle_prompt_preview_hash}[__{variant_hash}].json
     """
     target_dir = _model_bundle_dir("target", target_model_name, target_lora_path or "default")
     oracle_rollouts_dir = _rollouts_dir_name("oracle_prompt_rollouts", oracle_generation_kwargs)
@@ -324,7 +352,7 @@ def oracle_prompt_rollout_cache_file_path(
         lora_path=oracle_lora_path,
     )
     target_prompt_dir = _preview_hash_name(target_prompt)
-    oracle_file = f"{_preview_hash_name(oracle_prompt)}.json"
+    oracle_file = f"{_preview_hash_name(oracle_prompt)}{_variant_suffix(cache_variant_key)}.json"
     return (
         Path(cache_root)
         / target_dir
@@ -382,11 +410,7 @@ def deterministic_oracle_judge_cache_file_path(
         lora_path=oracle_lora_path,
     )
     target_prompt_dir = _preview_hash_name(target_prompt)
-    variant_suffix = ""
-    if cache_variant_key:
-        variant_hash = hashlib.sha256(cache_variant_key.encode("utf-8")).hexdigest()[:12]
-        variant_suffix = f"__{variant_hash}"
-    oracle_file = f"{_preview_hash_name(oracle_prompt)}{variant_suffix}.json"
+    oracle_file = f"{_preview_hash_name(oracle_prompt)}{_variant_suffix(cache_variant_key)}.json"
     return (
         Path(cache_root)
         / target_dir

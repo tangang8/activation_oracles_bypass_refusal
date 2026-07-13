@@ -272,6 +272,7 @@ def _oracle_cache_variant_key(
         cfg.oracle_input_types,
         cfg.oracle_token_point_filter,
         k_rollouts=k_rollouts,
+        max_new_tokens=cfg.oracle_max_new_tokens,
     )
 
 

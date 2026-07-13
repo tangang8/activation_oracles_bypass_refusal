@@ -397,16 +397,28 @@ Confirm empirically with `python count_oracle_tokens.py --include-combined` (nee
 on a GPU box): a healthy segment shows a spread of counts tailing off below 1000; a capped one
 piles up at one exact count == the max. That script is the source-of-truth cap detector.
 
-### The durable fix (recommended)
+### The durable fix (IMPLEMENTED)
 
-Fold `max_new_tokens` (or the whole `generation_kwargs`) into the **assembled** cache keys so the
-two reuse paths self-invalidate. Cheapest surgical option: add a `mxtok-<n>` component to the
-variant key returned by `_oracle_cache_variant_key()` (it already namespaces
-deterministic/prompt-only assembled files via the variant suffix), so a change in
-`ORACLE_MAX_NEW_TOKENS` forks a fresh assembled path instead of silently reusing a shorter one.
-Note the *target* rollout dir (`target_rollouts_temp-<T>`) has the same gap — it also keys only
-on temperature — but it matters less there because `MAX_NEW_TOKENS` for targets (10000) has been
-stable; the oracle paths are where the 128→1000 change actually bit.
+`max_new_tokens` is now folded into the **assembled** cache keys via
+`cache_utils.oracle_cache_variant_key(..., max_new_tokens=...)`, and the prompt-only path
+builder (`oracle_prompt_rollout_cache_file_path`) gained the same variant suffix the
+deterministic one had — so all assembled oracle namespaces (and the judged copies) fork when
+`ORACLE_MAX_NEW_TOKENS` changes instead of silently reusing shorter generations. Compatibility:
+the key omits the component at the historical baseline
+(`ORACLE_VARIANT_BASELINE_MAX_NEW_TOKENS = 1000`), so every existing cache file keeps its exact
+path ("omitted == 1000" is part of the on-disk contract). Additionally, the three mode-dependent
+reuse rules were collapsed into one predicate
+(`oracle_rollout_utils.entry_is_complete_and_current`): deterministic entries missing (or
+holding an empty decode for) a currently-requested scalar probe are regenerated in place instead
+of being silently served incomplete, prompt-only reuse requires every requested index 0..N-1 to
+be present and current (a bare count check used to return *fewer entries than requested* when
+cached indices were sparse), and sampled remains regenerate-always by design. Deterministic and
+sampled entries now also store only the *requested* scalar probes (as prompt-only always did)
+instead of padding unrequested ones with `""` — which both fed permanently-skipped empty probes
+to the judge and made complete entries indistinguishable from incomplete ones.
+Note the *target* rollout dir (`target_rollouts_temp-<T>`) still has the same gap — it also keys
+only on temperature — but it matters less there because `MAX_NEW_TOKENS` for targets (10000) has
+been stable; closing it is tracked with the target-judge reuse hardening.
 
 ---
 
@@ -799,10 +811,10 @@ These are genuine multi-file rewrites, each a standalone PR that changes behavio
   object; presets become config, not `export`s. Changes the run interface, so do it deliberately.
 - **Python scheduler** — move the dependency-DAG + OOM-ladder logic out of
   `run_parallel_strongreject_v5.sh` (~400 lines of bash) into Python; bash only launches. Changes ops.
-- **Unify oracle reuse** — collapse the three mode-dependent reuse paths (deterministic reuses the
-  assembled file by index; prompt-only short-circuits; sampled regenerates) into one "is this entry
-  complete and current?" predicate, and fold `max_new_tokens` into the assembled keys (closes the §6a
-  latent gap). Highest-risk change — it's the caching core where the truncation bugs lived.
+- **Unify oracle reuse [DONE]** — the three mode-dependent reuse paths are collapsed into
+  `oracle_rollout_utils.entry_is_complete_and_current`, and `max_new_tokens` is folded into the
+  assembled keys (closes the §6a latent gap; see §6a "durable fix" for details and the
+  compatibility contract).
 - **Module splits** — separate generation / cache-assembly / schema-conversion in
   `oracle_rollout_utils` (1081 lines) and `rollout_utils` (881 lines). Mechanical but sweeping.
 - **Generation-length guardrail** — a cheap post-generation check (fraction of outputs within one

@@ -40,6 +40,8 @@ VALID_ORACLE_ROLLOUT_MODES: tuple[OracleRolloutMode, ...] = (
 )
 DEFAULT_ORACLE_ROLLOUT_MODE: OracleRolloutMode = ALL_TARGET_DETERMINISTIC
 
+SCALAR_PROBE_KINDS = ("full_seq", "segment", "prompt_segment", "rollout_segment")
+
 DEFAULT_ORACLE_INPUT_TYPES = ["full_seq", "prompt_segment", "rollout_segment", "token_points"]
 DEFAULT_ORACLE_GENERATION_KWARGS = {
     "do_sample": False,
@@ -231,6 +233,51 @@ def _read_target_cache_rollout_index(entry: dict[str, Any], cache_file: Path) ->
     )
 
 
+def entry_is_complete_and_current(
+    entry: Any,
+    *,
+    index_field: str,
+    required_scalar_probes: set[str],
+    exact_scalar_probes: bool = False,
+) -> bool:
+    """THE assembled-cache reuse predicate: an entry is served from cache only if it passes.
+
+    All three rollout modes share these semantics (the reuse rules used to live inline in each
+    generator and drifted — that drift is how stale/short entries survived, §6a):
+      * deterministic — reusable entries are kept, failing ones regenerated in place;
+      * prompt-only — every requested index must pass or the whole set is resampled;
+      * sampled — always regenerates by design (a sampled entry is never "current"), so the
+        predicate is intentionally not consulted.
+    Generation parameters (temperature, max_new_tokens) are NOT checked here because they are
+    part of the cache *path* (`oracle_cache_variant_key`) — an entry read from the right file
+    was generated under the right parameters.
+
+    Checks: the entry is a dict carrying `index_field`, and every probe in
+    `required_scalar_probes` is present in `oracle_response` with non-empty text. A cached empty
+    decode is indistinguishable from a probe that was never generated (legacy entries wrote ""
+    for unrequested probes), so it is treated as absent and regenerated. With
+    `exact_scalar_probes` the cached scalar probe set must equal the required set (prompt-only
+    semantics: its entries carry exactly the requested probes, and serving extras would feed
+    unrequested probes to the judge)."""
+    if not isinstance(entry, dict):
+        return False
+    try:
+        int(entry[index_field])
+    except (KeyError, TypeError, ValueError):
+        return False
+    oracle_response = entry.get("oracle_response")
+    if not isinstance(oracle_response, dict):
+        return False
+    for probe in required_scalar_probes:
+        if not str(oracle_response.get(probe, "") or "").strip():
+            return False
+    if exact_scalar_probes:
+        cached_scalar_probes = {probe for probe in SCALAR_PROBE_KINDS if probe in oracle_response}
+        if cached_scalar_probes != required_scalar_probes:
+            return False
+    return True
+
+
 def _normalize_generation_kwargs(
     generation_kwargs: dict[str, Any] | None,
     *,
@@ -250,9 +297,16 @@ def _normalize_generation_kwargs(
 def _to_deterministic_oracle_entry(
     target_entry: dict[str, Any],
     oracle_result: dict[str, Any],
+    requested_scalar_probes: set[str],
 ) -> dict[str, Any]:
-    scalar_probe_kinds = ("full_seq", "segment", "prompt_segment", "rollout_segment")
-    scalar_responses = {kind: _first_response(oracle_result.get(kind, [])) for kind in scalar_probe_kinds}
+    # Write ONLY the requested scalar probes (as the prompt-only writer already does). Writing
+    # all four kinds with "" for unrequested ones made cached entries indistinguishable from
+    # incomplete ones and fed permanently-skipped empty probes to the judge.
+    scalar_responses = {
+        kind: _first_response(oracle_result.get(kind, []))
+        for kind in SCALAR_PROBE_KINDS
+        if kind in requested_scalar_probes
+    }
     scalar_formats = {kind: _format_leaf(text) for kind, text in scalar_responses.items()}
 
     tokens_raw = oracle_result.get("tokens", {})
@@ -483,6 +537,7 @@ def generate_deterministic_oracle_rollouts(
         oracle_input_types if explicit_oracle_input_types else None,
         oracle_token_point_filter,
         k_rollouts=effective_variant_k_rollouts(k_rollouts, len(sorted_targets)),
+        max_new_tokens=oracle_generation_kwargs.get("max_new_tokens"),
     )
 
     if not selected_targets:
@@ -525,23 +580,30 @@ def generate_deterministic_oracle_rollouts(
         existing_by_index[idx] = entry
 
     target_enable_thinking = False if target_thinking_mode == "off" else None
+    required_scalar_probes = {probe for probe in oracle_input_types if probe in SCALAR_PROBE_KINDS}
 
-    # Rollouts absent from the cache entirely -> compute every requested probe.
+    # Rollouts absent from the cache, or cached without every currently-requested scalar probe
+    # (the shared reuse predicate) -> regenerate the whole entry in place.
     missing_target_entries = [
         entry
         for entry in selected_targets
-        if int(entry["rollout_index"]) not in existing_by_index
+        if not entry_is_complete_and_current(
+            existing_by_index.get(int(entry["rollout_index"])),
+            index_field="rollout_index",
+            required_scalar_probes=required_scalar_probes,
+        )
     ]
+    missing_indices = {int(entry["rollout_index"]) for entry in missing_target_entries}
 
-    # Rollouts already cached but missing token points the current extractor now emits
-    # (e.g. after adding a token point). Compute ONLY the missing probes and splice them
+    # Rollouts already cached and current except for token points the current extractor now
+    # emits (e.g. after adding a token point). Compute ONLY the missing probes and splice them
     # into the existing entry, reusing every decode already on disk.
     incomplete_items: list[tuple[dict[str, Any], dict[str, Any], dict[str, int], dict[str, Any]]] = []
     if "token_points" in oracle_input_types:
         for target_entry in selected_targets:
             idx = int(target_entry["rollout_index"])
             existing = existing_by_index.get(idx)
-            if existing is None:
+            if existing is None or idx in missing_indices:
                 continue
             try:
                 required_spec = _required_combined_spec(
@@ -618,7 +680,7 @@ def generate_deterministic_oracle_rollouts(
         for result in batched_oracle_results:
             result["oracle_prompt"] = oracle_prompt
         new_entries = [
-            _to_deterministic_oracle_entry(target_entry, result)
+            _to_deterministic_oracle_entry(target_entry, result, required_scalar_probes)
             for target_entry, result in zip(missing_target_entries, batched_oracle_results, strict=True)
         ]
     else:
@@ -729,6 +791,7 @@ def generate_sampled_target_oracle_rollouts(
         oracle_input_types if explicit_oracle_input_types else None,
         oracle_token_point_filter,
         k_rollouts=effective_variant_k_rollouts(k_rollouts, len(sorted_targets)),
+        max_new_tokens=oracle_generation_kwargs.get("max_new_tokens"),
     )
 
     if not selected_targets:
@@ -792,13 +855,14 @@ def generate_sampled_target_oracle_rollouts(
     for result in batched_oracle_results:
         result["oracle_prompt"] = oracle_prompt
 
+    required_scalar_probes = {probe for probe in oracle_input_types if probe in SCALAR_PROBE_KINDS}
     expanded_entries: list[dict[str, Any]] = []
     for target_entry, oracle_result in zip(selected_targets, batched_oracle_results, strict=True):
         repeats_for_target = int(oracle_result.get("oracle_repeats", 0))
         for oracle_rollout_index in range(min(num_oracle_rollouts, repeats_for_target)):
             repeat_result = _oracle_result_for_repeat(oracle_result, oracle_rollout_index)
             repeat_result["oracle_prompt"] = oracle_prompt
-            entry = _to_deterministic_oracle_entry(target_entry, repeat_result)
+            entry = _to_deterministic_oracle_entry(target_entry, repeat_result, required_scalar_probes)
             entry["target_rollout_index"] = int(target_entry["rollout_index"])
             entry["oracle_rollout_index"] = oracle_rollout_index
             expanded_entries.append(entry)
@@ -860,10 +924,15 @@ def generate_prompt_only_oracle_rollouts(
         do_sample=True,
         temperature=1.0,
     )
+    explicit_oracle_input_types = oracle_input_types is not None
     if oracle_input_types is None:
         oracle_input_types = list(PROMPT_ONLY_ORACLE_INPUT_TYPES)
-    scalar_probe_kinds = {"full_seq", "segment", "prompt_segment", "rollout_segment"}
-    expected_scalar_probes = {probe for probe in oracle_input_types if probe in scalar_probe_kinds}
+    expected_scalar_probes = {probe for probe in oracle_input_types if probe in SCALAR_PROBE_KINDS}
+    cache_variant_key = oracle_cache_variant_key(
+        oracle_input_types if explicit_oracle_input_types else None,
+        oracle_token_point_filter,
+        max_new_tokens=oracle_generation_kwargs.get("max_new_tokens"),
+    )
 
     formatted_target_prompt = format_user_target_prompt(tokenizer, target_prompt)
     cache_file = oracle_prompt_rollout_cache_file_path(
@@ -875,6 +944,7 @@ def generate_prompt_only_oracle_rollouts(
         oracle_generation_kwargs=oracle_generation_kwargs,
         target_prompt=target_prompt,
         oracle_prompt=oracle_prompt,
+        cache_variant_key=cache_variant_key,
     )
 
     loaded = load_json(cache_file)
@@ -889,22 +959,28 @@ def generate_prompt_only_oracle_rollouts(
             raise
         except Exception:
             continue
-        oracle_response = entry.get("oracle_response", {})
-        if not isinstance(oracle_response, dict):
-            continue
-        cached_scalar_probes = {probe for probe in scalar_probe_kinds if probe in oracle_response}
-        if cached_scalar_probes != expected_scalar_probes:
+        if not entry_is_complete_and_current(
+            entry,
+            index_field="oracle_rollout_index",
+            required_scalar_probes=expected_scalar_probes,
+            exact_scalar_probes=True,
+        ):
             continue
         existing_by_index[idx] = entry
 
+    # Reuse requires every requested index 0..N-1 to be present and current — a bare count
+    # check served fewer entries than requested when cached indices were sparse (e.g. written
+    # under a different num_oracle_rollouts).
+    requested_indices = range(num_oracle_rollouts)
+    hits = sum(1 for i in requested_indices if i in existing_by_index)
     cache_stats = {
-        "cache/oracle_hits": float(len(existing_by_index)),
-        "cache/oracle_missing": float(max(0, num_oracle_rollouts - len(existing_by_index))),
+        "cache/oracle_hits": float(hits),
+        "cache/oracle_missing": float(num_oracle_rollouts - hits),
         "cache/oracle_total": float(num_oracle_rollouts),
     }
 
-    if len(existing_by_index) >= num_oracle_rollouts:
-        final_entries = [existing_by_index[i] for i in range(num_oracle_rollouts) if i in existing_by_index]
+    if hits == num_oracle_rollouts:
+        final_entries = [existing_by_index[i] for i in requested_indices]
         return final_entries, cache_file, cache_stats
 
     batched_oracle_results = run_oracle_batched(
