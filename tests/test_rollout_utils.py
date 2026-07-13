@@ -211,6 +211,73 @@ class RolloutUtilsTests(unittest.TestCase):
         self.assertEqual(len(judged), 5)
         self.assertEqual([len(call.kwargs["target_responses"]) for call in score_mock.call_args_list], [2, 2, 1])
 
+    def test_judge_target_rollouts_preserves_unrequested_entries_and_requeues_placeholders(self) -> None:
+        """A smaller re-run must not truncate the judged cache, and skipped placeholders
+        must be re-judged instead of staying permanent unscored holes."""
+        model = SimpleNamespace(config=SimpleNamespace(_name_or_path="Qwen/Qwen3-8B"))
+
+        def _judged(i, score=1):
+            return {
+                "rollout_index": i,
+                "target_prompt": "prompt",
+                "target_response": f"raw-{i}",
+                "target_format": {"response_only": f"response-{i}"},
+                "compliance": {"score": score, "judge_skipped": False, "valid_judge_format": True},
+            }
+
+        placeholder = {
+            "rollout_index": 1,
+            "target_prompt": "prompt",
+            "target_response": "raw-1",
+            "target_format": {"response_only": "response-1"},
+            "compliance": {"score": None, "reason": "Missing judged output entry.", "judge_skipped": True},
+        }
+        # Cache holds judged 0..4 plus a placeholder at index 1; the run requests only 0..1.
+        existing = [_judged(0)] + [placeholder] + [_judged(i) for i in range(2, 5)]
+        request = [
+            {
+                "rollout_index": i,
+                "target_prompt": "prompt",
+                "target_response": f"raw-{i}",
+                "target_format": {"response_only": f"response-{i}"},
+            }
+            for i in range(2)
+        ]
+
+        def _fake_score(**kwargs):
+            return [
+                {"score": 5, "reason": "ok", "raw_judgment": "", "response_only": "",
+                 "thinking": "", "judge_skipped": False, "valid_judge_format": True}
+                for _ in kwargs["target_responses"]
+            ]
+
+        written: dict[str, Any] = {}
+        with (
+            patch("rollout_utils.judge_cache_file_path", return_value=Path("judge.json")),
+            patch("rollout_utils.load_json", return_value=existing),
+            patch("rollout_utils.write_json", side_effect=lambda _p, v: written.setdefault("entries", v)),
+            patch("rollout_utils.score_responses_compliance_batched", side_effect=_fake_score) as score_mock,
+        ):
+            judged, _, _ = ru.judge_target_rollouts(
+                judge_model=model,
+                judge_tokenizer=object(),
+                user_prompt="prompt",
+                target_rollout_entries=request,
+                judge_instruction_template="Prompt: {user_prompt}\nResponse: {model_response}",
+                judge_instruction_file="f",
+                judge_instruction_stem="s",
+                device=object(),
+                target_model_name="Qwen/Qwen3-8B",
+                target_lora_path="default",
+            )
+
+        # Only the placeholder index was re-judged (index 0 reused from cache).
+        self.assertEqual(score_mock.call_args_list[0].kwargs["target_responses"], ["response-1"])
+        self.assertEqual(judged[1]["compliance"]["score"], 5)
+        # The written file keeps ALL indices 0..4 — no truncation to the requested subset.
+        self.assertEqual([e["rollout_index"] for e in written["entries"]], [0, 1, 2, 3, 4])
+        self.assertEqual(written["entries"][1]["compliance"]["score"], 5)
+
     def test_aggregate_compliance_supports_strongreject_scores(self) -> None:
         entries = [
             {"compliance": {"score": 0.0, "score_scale": "strongreject_0_1"}},

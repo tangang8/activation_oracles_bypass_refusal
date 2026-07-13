@@ -14,6 +14,7 @@ from typing import Any
 from cache_utils import (
     deterministic_oracle_judge_cache_file_path,
     judge_cache_file_path,
+    oracle_cache_variant_key,
     preview_hash_name,
 )
 from prompt_utils import load_oracle_prompts_from_file, load_target_prompts_from_dataset
@@ -33,13 +34,11 @@ CONDITION_TO_WITHIN_PROMPT_AXIS: dict[str, str | None] = {
     "target_baseline": "target_rollouts",
     "oracle_rollout_control": "target_rollouts",
 }
-ROLLOUT_POST_PROMPT_VARIANT = json.dumps(
-    {
-        "oracle_input_types": ["rollout_segment", "token_points"],
-        "oracle_token_point_filter": "post_prompt",
-    },
-    sort_keys=True,
-    ensure_ascii=True,
+# Built by the SAME canonical serializer the pipeline uses, so the compiler can never drift
+# from the namespace the oracle/judge stages actually write (it was previously a hand-built
+# JSON copy that had to stay byte-identical).
+ROLLOUT_POST_PROMPT_VARIANT = oracle_cache_variant_key(
+    ["rollout_segment", "token_points"], "post_prompt"
 )
 
 
@@ -186,6 +185,32 @@ def _base_row(
     }
 
 
+def _group_key(shared: dict[str, Any], probe_kind: str, probe_name: str) -> tuple[Any, ...]:
+    """The (prompt, probe) aggregation key — MUST mirror the grouping in _prompt_level_rows."""
+    return (
+        shared["condition"],
+        shared["preset_source"],
+        shared["target_prompt_index"],
+        shared["target_prompt_key"],
+        shared["target_prompt"],
+        shared["oracle_prompt_file"],
+        shared["oracle_prompt_index"],
+        shared["oracle_prompt_key"],
+        shared["oracle_prompt"],
+        probe_kind,
+        probe_name,
+    )
+
+
+def _record_unscored(
+    unscored_by_group: dict[tuple[Any, ...], dict[str, Any]],
+    key: tuple[Any, ...],
+    cache_path: Path,
+) -> None:
+    slot = unscored_by_group.setdefault(key, {"count": 0, "cache_path": str(cache_path)})
+    slot["count"] += 1
+
+
 def _flatten_target_entries(
     *,
     entries: list[dict[str, Any]],
@@ -193,11 +218,15 @@ def _flatten_target_entries(
     cfg: StrongRejectCompileConfig,
     cache_path: Path,
     manifest: dict[str, Any],
+    unscored_by_group: dict[tuple[Any, ...], dict[str, Any]],
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for entry in entries:
         score = _valid_strongreject_leaf(entry.get("compliance"), cfg=cfg, cache_path=cache_path, manifest=manifest)
         if score is None:
+            # Judge-skipped / parse-failure leaf: COUNT it instead of silently dropping it —
+            # refusals keep their 0.0 while failures used to vanish (asymmetric selection).
+            _record_unscored(unscored_by_group, _group_key(shared, "target_response", "target_response"), cache_path)
             continue
         rows.append(
             {
@@ -220,6 +249,7 @@ def _flatten_oracle_entries(
     cfg: StrongRejectCompileConfig,
     cache_path: Path,
     manifest: dict[str, Any],
+    unscored_by_group: dict[tuple[Any, ...], dict[str, Any]],
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for entry in entries:
@@ -230,6 +260,10 @@ def _flatten_oracle_entries(
         def append(probe_kind: str, probe_name: str, leaf: Any) -> None:
             score = _valid_strongreject_leaf(leaf, cfg=cfg, cache_path=cache_path, manifest=manifest)
             if score is None:
+                # The probe exists in the entry's compliance shell but yielded no usable score
+                # (unjudged/skipped/malformed): count it so failures don't silently thin the
+                # sample while refusals stay in at 0.0.
+                _record_unscored(unscored_by_group, _group_key(shared, probe_kind, probe_name), cache_path)
                 return
             rows.append(
                 {
@@ -244,7 +278,10 @@ def _flatten_oracle_entries(
             )
 
         for probe_kind in SCALAR_PROBES:
-            append(probe_kind, probe_kind, compliance.get(probe_kind))
+            # Only probes present in the shell were requested for this entry; .get() would
+            # miscount never-requested probes as failures.
+            if probe_kind in compliance:
+                append(probe_kind, probe_kind, compliance.get(probe_kind))
         for probe_kind in ("tokens", "token_points"):
             container = compliance.get(probe_kind, {})
             if not isinstance(container, dict):
@@ -326,7 +363,12 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
-def _prompt_level_rows(detail_rows: list[dict[str, Any]], thresholds: tuple[float, ...]) -> list[dict[str, Any]]:
+def _prompt_level_rows(
+    detail_rows: list[dict[str, Any]],
+    thresholds: tuple[float, ...],
+    unscored_by_group: dict[tuple[Any, ...], dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    unscored_by_group = unscored_by_group or {}
     grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in detail_rows:
         key = (
@@ -343,12 +385,18 @@ def _prompt_level_rows(detail_rows: list[dict[str, Any]], thresholds: tuple[floa
             row["probe_name"],
         )
         grouped[key].append(row)
+    # Groups whose every leaf failed scoring would otherwise vanish from the prompt-level
+    # table entirely; keep them visible as n_scored=0 rows.
+    for key in unscored_by_group:
+        grouped.setdefault(key, [])
 
     out: list[dict[str, Any]] = []
     for key, rows in grouped.items():
         scores = [float(row["score"]) for row in rows]
         sd = _round(_sample_sd(scores))
         axis = CONDITION_TO_WITHIN_PROMPT_AXIS.get(key[0])
+        n_unscored = int(unscored_by_group.get(key, {}).get("count", 0))
+        n_total = len(scores) + n_unscored
         prompt_row: dict[str, Any] = {
             "condition": key[0],
             "preset_source": key[1],
@@ -362,15 +410,22 @@ def _prompt_level_rows(detail_rows: list[dict[str, Any]], thresholds: tuple[floa
             "probe_kind": key[9],
             "probe_name": key[10],
             "n_scored": len(scores),
+            "n_unscored": n_unscored,
+            "unscored_rate": _round(n_unscored / n_total) if n_total else None,
             "oracle_rollout_indices": sorted({r["oracle_rollout_index"] for r in rows if r.get("oracle_rollout_index") is not None}),
+            "target_rollout_indices": sorted({r["target_rollout_index"] for r in rows if r.get("target_rollout_index") is not None}),
             "mean_score": _round(_mean(scores)),
             "sd_within_prompt_oracle_rollouts": sd if axis == "oracle_rollouts" else None,
             "sd_within_prompt_target_rollouts": sd if axis == "target_rollouts" else None,
-            "cache_path": rows[0].get("cache_path"),
+            "cache_path": rows[0].get("cache_path") if rows else unscored_by_group.get(key, {}).get("cache_path"),
         }
         for threshold in thresholds:
             label = _threshold_label(threshold)
-            prompt_row[f"asr_{label}"] = _round(sum(1 for score in scores if _passes_threshold(score, threshold)) / len(scores))
+            prompt_row[f"asr_{label}"] = (
+                _round(sum(1 for score in scores if _passes_threshold(score, threshold)) / len(scores))
+                if scores
+                else None
+            )
         out.append(prompt_row)
 
     out.sort(key=lambda row: (
@@ -383,7 +438,11 @@ def _prompt_level_rows(detail_rows: list[dict[str, Any]], thresholds: tuple[floa
     return out
 
 
-def _summary_rows(prompt_rows: list[dict[str, Any]], thresholds: tuple[float, ...]) -> list[dict[str, Any]]:
+def _summary_rows(
+    prompt_rows: list[dict[str, Any]],
+    thresholds: tuple[float, ...],
+    expected_prompts: int | None = None,
+) -> list[dict[str, Any]]:
     grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in prompt_rows:
         key = (
@@ -411,6 +470,11 @@ def _summary_rows(prompt_rows: list[dict[str, Any]], thresholds: tuple[float, ..
             "probe_kind": key[6],
             "probe_name": key[7],
             "n_prompts": len(score_values),
+            # Prompts with no valid score for this probe drop out of n_prompts, so per-probe
+            # summaries can average over different denominators; surface the shortfall.
+            "n_prompts_missing": (
+                max(0, expected_prompts - len(score_values)) if expected_prompts is not None else None
+            ),
             "mean_score": _round(_mean(score_values)),
             "se_score": _round(_se(score_values)),
         }
@@ -544,6 +608,7 @@ def compile_strongreject_results(
         )
 
     detail_rows: list[dict[str, Any]] = []
+    unscored_by_group: dict[tuple[Any, ...], dict[str, Any]] = {}
     indexed_prompts = list(enumerate(target_prompts, start=cfg.target_prompt_offset))
 
     for target_prompt_index, target_prompt in indexed_prompts:
@@ -576,6 +641,7 @@ def compile_strongreject_results(
                 cfg=cfg,
                 cache_path=path,
                 manifest=manifest,
+                unscored_by_group=unscored_by_group,
             )
             if len(rows) < cfg.expected_target_rollouts:
                 present = {r["rollout_index"] for r in rows if r.get("rollout_index") is not None}
@@ -635,12 +701,23 @@ def compile_strongreject_results(
                         cfg=cfg,
                         cache_path=path,
                         manifest=manifest,
+                        unscored_by_group=unscored_by_group,
                     )
                     detail_rows.extend(rows)
 
-    prompt_rows = _prompt_level_rows(detail_rows, cfg.thresholds)
+    prompt_rows = _prompt_level_rows(detail_rows, cfg.thresholds, unscored_by_group)
+    # Coverage floors for BOTH oracle conditions (the warning used to fire only for
+    # user_prompt_oracle, so target_rollout_oracle probes could thin out silently).
+    coverage_floor_by_condition = {
+        "user_prompt_oracle": (cfg.expected_oracle_rollouts, "oracle_rollout_indices"),
+        "target_rollout_oracle": (cfg.expected_target_rollouts, "target_rollout_indices"),
+    }
     for row in prompt_rows:
-        if row["condition"] == "user_prompt_oracle" and int(row["n_scored"]) < cfg.expected_oracle_rollouts:
+        floor = coverage_floor_by_condition.get(row["condition"])
+        if floor is None:
+            continue
+        expected_scored, index_field = floor
+        if int(row["n_scored"]) < expected_scored:
             manifest["coverage_warnings"].append(
                 {
                     "condition": row["condition"],
@@ -648,13 +725,14 @@ def compile_strongreject_results(
                     "oracle_prompt_file": row["oracle_prompt_file"],
                     "probe_kind": row["probe_kind"],
                     "probe_name": row["probe_name"],
-                    "expected_scored": cfg.expected_oracle_rollouts,
+                    "expected_scored": expected_scored,
                     "actual_scored": row["n_scored"],
-                    "missing_rollout_indices": sorted(set(range(cfg.expected_oracle_rollouts)) - set(row["oracle_rollout_indices"])),
+                    "n_unscored": row["n_unscored"],
+                    "missing_rollout_indices": sorted(set(range(expected_scored)) - set(row[index_field])),
                     "path": row.get("cache_path"),
                 }
             )
-    summary_rows = _summary_rows(prompt_rows, cfg.thresholds)
+    summary_rows = _summary_rows(prompt_rows, cfg.thresholds, expected_prompts=cfg.expected_target_prompts)
     reliability_rows = _reliability_rows(prompt_rows)
 
     output_dir = cfg.output_dir
@@ -673,6 +751,7 @@ def compile_strongreject_results(
 
     manifest["expected_files"] = dict(manifest["expected_files"])
     manifest["loaded_files"] = dict(manifest["loaded_files"])
+    manifest["unscored_leaf_count"] = sum(slot["count"] for slot in unscored_by_group.values())
     manifest["detail_row_count"] = len(detail_rows)
     manifest["prompt_level_row_count"] = len(prompt_rows)
     manifest["summary_row_count"] = len(summary_rows)

@@ -599,6 +599,7 @@ def generate_deterministic_oracle_rollouts(
     # emits (e.g. after adding a token point). Compute ONLY the missing probes and splice them
     # into the existing entry, reusing every decode already on disk.
     incomplete_items: list[tuple[dict[str, Any], dict[str, Any], dict[str, int], dict[str, Any]]] = []
+    spec_unresolved_count = 0
     if "token_points" in oracle_input_types:
         for target_entry in selected_targets:
             idx = int(target_entry["rollout_index"])
@@ -618,7 +619,10 @@ def generate_deterministic_oracle_rollouts(
                     oracle_token_point_filter,
                 )
             except Exception:
-                # Cached under different/older extraction that no longer resolves; leave as-is.
+                # Cached under different/older extraction that no longer resolves; leave the
+                # entry as-is but COUNT it (a swallowed raise here used to hide backfill
+                # never running, e.g. the old thinking-off extractor crash).
+                spec_unresolved_count += 1
                 continue
             present = set(existing.get("oracle_response", {}).get("token_points", {}))
             required = required_spec.get("token_points", {})
@@ -634,6 +638,7 @@ def generate_deterministic_oracle_rollouts(
         "cache/oracle_hits": float(selected_hit_count),
         "cache/oracle_missing": float(len(missing_target_entries)),
         "cache/oracle_incomplete": float(len(incomplete_items)),
+        "cache/oracle_spec_unresolved": float(spec_unresolved_count),
         "cache/oracle_total": float(len(selected_targets)),
         "cache/oracle_deterministic_k_rollouts": float(k_rollouts or 0),
     }

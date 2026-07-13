@@ -168,16 +168,37 @@ def extract_token_points_combined_qwen(
 
     rollout_ids = combined_ids[prompt_len:]
     think_close_start_rollout = _find_last_subsequence_start(rollout_ids, think_close_ids)
-    if think_close_start_rollout is None:
-        raise ValueError("Could not find </think> token in rollout.")
-    think_close_start = prompt_len + think_close_start_rollout
-    first_after_think_close = think_close_start + len(think_close_ids)
-    if first_after_think_close >= combined_len:
-        raise ValueError("No token found after </think> in rollout.")
-    # The token after </think> is the "\n\n" separator; the answer starts one token later.
-    first_answer_token = first_after_think_close + 1
-    if first_answer_token >= combined_len:
-        raise ValueError("No answer token found after </think> separator in rollout.")
+    if think_close_start_rollout is not None:
+        think_close_start = prompt_len + think_close_start_rollout
+        first_after_think_close = think_close_start + len(think_close_ids)
+        if first_after_think_close >= combined_len:
+            raise ValueError("No token found after </think> in rollout.")
+        # The answer usually starts after a whitespace separator token ("\n\n") — but only
+        # skip that token if it actually IS whitespace; a rollout like "</think>Sure," has
+        # no separator and the answer starts immediately.
+        separator_text = tokenizer.decode(
+            [int(combined_ids[first_after_think_close])],
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+        )
+        if separator_text.strip() == "":
+            first_answer_token = first_after_think_close + 1
+            if first_answer_token >= combined_len:
+                raise ValueError("No answer token found after </think> separator in rollout.")
+        else:
+            first_answer_token = first_after_think_close
+    else:
+        # With target thinking off, apply_chat_template puts an empty <think>\n\n</think>
+        # block inside the PROMPT, so </think> never appears in the rollout span. The
+        # think-close points then live at the prompt positions and the answer starts at the
+        # first rollout token.
+        think_close_start = _find_last_subsequence_start(prompt_ids, think_close_ids)
+        if think_close_start is None:
+            raise ValueError("Could not find </think> token in rollout or prompt.")
+        first_after_think_close = think_close_start + len(think_close_ids)
+        if first_after_think_close >= prompt_len:
+            raise ValueError("No token found after prompt </think> block.")
+        first_answer_token = prompt_len
 
     token_points = {
         "im_end_token": im_end_start,

@@ -39,6 +39,9 @@ class OracleJudgeUtilsTests(unittest.TestCase):
         self.assertIn("tokens", kinds)
         self.assertIn("token_points", kinds)
         self.assertTrue(all(x["rollout_index"] == 7 for x in flat))
+        # EVERY probe kind must carry entry_key — the update path is keyed on it, and
+        # tokens/token_points items missing it crashed live oracle judging (KeyError).
+        self.assertTrue(all(x["entry_key"] == "o7" for x in flat))
 
     def test_entry_key_is_stable_across_num_oracle_rollouts(self) -> None:
         # sampled entries key on the explicit (target, oracle) pair, so the identity does NOT move

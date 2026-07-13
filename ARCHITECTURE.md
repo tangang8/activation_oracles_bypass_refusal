@@ -763,35 +763,65 @@ cached score from those fields (idempotent; refusals at 0.0 and perfect scores a
 then re-run `generate_reports.py --compile-first`. The `strongreject_0_1` scale label is unchanged
 (the scale is still [0,1]); only the anchoring changed.
 
-**MED — denominators silently exclude failures. [(a) FIXED, (b) OPEN]**
+**HIGH — flattened judge items lacked `entry_key` for tokens/token_points. [FIXED]**
+The judge-identity fix keyed updates on `entry_key`, but `_flatten_oracle_responses` only attached
+it to scalar-probe items — any live oracle-judge run with pending token/token-point probes crashed
+with `KeyError: 'entry_key'`. Caught by the first real GPU run (the torch-free extraction tests
+could not see it); all probe-kind items now carry `entry_key`, with a regression test.
+
+**HIGH — judge caches were truncated by smaller re-runs; skipped placeholders were permanent. [FIXED]**
+`judge_target_rollouts` rewrote the judged cache with only the *currently requested* rollouts — a
+`NUM_ROLLOUTS=3` validation run truncated a 50-entry judged file to 3 (verified live, restored from
+git). The oracle judge's materialize path had the same shape. Both now write the union of existing
+and newly judged entries. Additionally, `"Missing judged output entry"` placeholders (written when a
+run dies mid-judge) were reloaded as valid entries and never re-judged — a transient failure became
+a permanent unscored hole. Skipped no-score entries are now re-queued on load (and placeholders are
+returned to the caller but never persisted); genuinely unjudgeable empty-response entries re-skip
+locally at no model cost.
+
+**MED — denominators silently exclude failures. [(a) FIXED, (b) FIXED]**
 (a) `rollout_utils.aggregate_compliance` previously counted `score=None` entries (judge-skipped,
 invalid-format, "missing judged output" placeholders) in `n` but not the numerator → compliance
 biased **down**. Fixed: the rate is now computed over the `scored` responses, and `scored`/`unscored`
 counts are returned (and printed by `display_rollout_results`); `_oracle_judge_summary` likewise emits
-`oracle_judge/total_unscored`. (b) *Still open:* `compile_strongreject_results` *drops* parse-failure
-leaves entirely (`_valid_strongreject_leaf → None`) while keeping genuine refusals at 0 — an
-asymmetric selection; if parse failures correlate with content the mean/ASR is over a non-random
-subsample, and the compiler doesn't record the per-(prompt,probe) failure rate.
+`oracle_judge/total_unscored`. (b) Fixed: the compiler now counts every present-but-unscored leaf
+per (prompt, probe) group — prompt-level rows carry `n_unscored`/`unscored_rate`, groups whose every
+leaf failed appear as `n_scored=0` rows instead of vanishing, and the manifest reports
+`unscored_leaf_count`. Refusals stay in at 0.0; failures are no longer silently dropped.
 
-**MED — coverage floors are incomplete.**
-The compiler's `n_scored < expected` warning fires only for `user_prompt_oracle`; a
-`target_rollout_oracle` token-point probe can silently thin out (every rollout that fails token-point
-extraction is dropped whole) with no warning. `_summary_rows` sets `n_prompts = #prompts with any
-valid score for that probe`, so fully-missing prompts vanish from the denominator and per-probe
-summaries use non-comparable N.
+**MED — coverage floors are incomplete. [FIXED]**
+The `n_scored < expected` warning now fires for both `user_prompt_oracle` (vs
+`expected_oracle_rollouts`) and `target_rollout_oracle` (vs `expected_target_rollouts`, with missing
+target-rollout indices listed), and `_summary_rows` emits `n_prompts_missing`
+(= expected_target_prompts − n_prompts) so non-comparable per-probe N is visible in the CSV.
 
-**MED — compiler hard-codes the cache namespace.** `ROLLOUT_POST_PROMPT_VARIANT`, target thinking
-modes, LoRA names, and temps are hard-coded; any run with a different `K_ROLLOUTS` (`k < entries`),
-`TARGET_THINKING`, or oracle temp writes a different variant hash the compiler never looks up — the
-condition then just disappears into `missing_files` unless `--strict`.
+**MED — compiler hard-codes the cache namespace. [PARTIALLY FIXED]**
+`ROLLOUT_POST_PROMPT_VARIANT` is now built by `cache_utils.oracle_cache_variant_key` (the same
+canonical serializer the pipeline uses) instead of a hand-maintained JSON copy. *Still open:* the
+conditions grid (target thinking modes, LoRA names, temps, `k`) is hard-coded; a run with a
+different `K_ROLLOUTS`, `TARGET_THINKING`, or oracle temp writes a variant hash the compiler never
+looks up — the condition disappears into `missing_files` unless `--strict`. The real fix is the
+typed-config refactor (compiler and runner sharing one config source).
 
-**MED — token-point extraction fragility (`oracle_token_points.py`).**
-(a) `first_answer_token_after_think` blindly takes `</think>` index + 1 without verifying the next
-token is the `"\n\n"` separator — a rollout like `</think>Sure,...` (no newline) probes the wrong
-token silently. (b) `extract_token_points_combined_qwen` hard-raises for `target_thinking_mode="off"`
-(the empty `<think></think>` block lands inside the prompt, so `</think>` isn't in the rollout span),
-crashing the oracle stage for a supported config; in the incomplete-backfill path that raise is
-swallowed so backfill silently never runs.
+**MED — token-point extraction fragility (`oracle_token_points.py`). [FIXED]**
+(a) `first_answer_token_after_think` now checks whether the token after `</think>` is actually
+whitespace before skipping it — `</think>Sure,...` probes `Sure` instead of the token after it.
+(b) `extract_token_points_combined_qwen` supports `target_thinking_mode="off"`: when `</think>`
+is absent from the rollout it is located in the prompt (the empty think block) and
+`first_answer_token_after_think` maps to the first rollout token, instead of hard-raising. The
+deterministic generator also counts entries whose extraction spec fails to resolve
+(`cache/oracle_spec_unresolved`) instead of swallowing them silently in the backfill path.
+
+**MED — target-judge reuse lacks the oracle side's staleness guards. [OPEN]**
+`judge_target_rollouts` reuses a cached judged entry purely by `rollout_index`: no
+`judged_response_sha` (if the target rollout cache is deleted/regenerated — including the
+corrupt-file → `load_json`-returns-None → silent resample path — old scores pair with new
+responses) and no `judge_provenance_sha` (a rubric edit reuses scores computed under the old
+rule). Port the oracle judge's two hash guards. Related: the *target* rollout dir
+(`target_rollouts_temp-<T>`) still keys only on temperature — apply the §6a mxtok pattern with
+baseline `MAX_NEW_TOKENS=10000` when touching this. Also stringly-typed: judge scoring mode is
+inferred from the rubric filename prefix (`startswith("strongreject")`) in two places — renaming
+the rubric silently switches parsers; fold the mode into config/provenance.
 
 **LOW — display/quality niceties:** `_compliance_bucket`/`_flatten` scalar fallback (`""` instead of
 raw text), `parse_thinking` dropping pre-`</think>` text when only a close tag is present, invalid
@@ -819,6 +849,8 @@ These are genuine multi-file rewrites, each a standalone PR that changes behavio
   `oracle_rollout_utils` (1081 lines) and `rollout_utils` (881 lines). Mechanical but sweeping.
 - **Generation-length guardrail** — a cheap post-generation check (fraction of outputs within one
   token of `max_new_tokens`, logged to W&B) so a future short-cap can't go unnoticed like the 128 one.
+  *Descoped by owner decision (2026-07-13); the mxtok cache-key fix removes the reuse half of the
+  risk, so a short cap now only affects the run that sets it.*
 
 **Verified correct (for the record):** left-pad index math end-to-end; int-vs-str token-key handling;
 distributed shard disjointness + rank-0-only writes; SE computed on the across-prompt axis

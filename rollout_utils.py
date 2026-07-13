@@ -730,6 +730,16 @@ def judge_target_rollouts(
             idx = int(entry["rollout_index"])
         except Exception:
             continue
+        compliance = entry.get("compliance", {})
+        if (
+            isinstance(compliance, dict)
+            and compliance.get("judge_skipped")
+            and not _is_numeric_score(compliance.get("score"))
+        ):
+            # Skipped placeholders ("Missing judged output entry" from a died run, or an
+            # empty parsed response) are re-queued instead of being permanent unscored holes;
+            # empty-response entries re-skip locally without a judge call, so this is cheap.
+            continue
         existing_by_index[idx] = entry
 
     missing_rollouts = [e for e in target_rollout_entries if int(e["rollout_index"]) not in existing_by_index]
@@ -863,6 +873,12 @@ def judge_target_rollouts(
             for entry in rank_entries:
                 merged_by_index[int(entry["rollout_index"])] = entry
 
+        # Persist EVERY judged entry, not just the requested subset — a smaller NUM_ROLLOUTS
+        # re-run used to truncate the judged cache to that subset (50 -> 3), destroying scores.
+        # "Missing judged output" placeholders are returned to the caller below but never
+        # written, so a transient failure self-heals on the next run.
+        write_json(cache_file, [merged_by_index[i] for i in sorted(merged_by_index)])
+
         final_entries = []
         for target_entry in sorted(target_rollout_entries, key=lambda e: int(e["rollout_index"])):
             idx = int(target_entry["rollout_index"])
@@ -887,7 +903,6 @@ def judge_target_rollouts(
                         },
                     }
                 )
-        write_json(cache_file, final_entries)
 
     if dist_ctx is not None and dist_ctx.enabled:
         final_entries = broadcast_object(dist_ctx, final_entries, src=0)

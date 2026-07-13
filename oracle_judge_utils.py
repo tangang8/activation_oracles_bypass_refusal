@@ -98,6 +98,7 @@ def _flatten_oracle_responses(entry: dict[str, Any]) -> list[dict[str, Any]]:
             flattened.append(
                 {
                     "rollout_index": rollout_index,
+                    "entry_key": entry_key,
                     "source_index_label": source_index_label,
                     "path": ("tokens", token_key),
                     "probe_kind": "tokens",
@@ -122,6 +123,7 @@ def _flatten_oracle_responses(entry: dict[str, Any]) -> list[dict[str, Any]]:
             flattened.append(
                 {
                     "rollout_index": rollout_index,
+                    "entry_key": entry_key,
                     "source_index_label": source_index_label,
                     "path": ("token_points", point_key),
                     "probe_kind": "token_points",
@@ -292,12 +294,21 @@ def _materialize_oracle_judge_entries(
     *,
     oracle_rollout_entries: list[dict[str, Any]],
     merged_by_key: dict[str, dict[str, Any]],
+    existing_by_key: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    return [
+    current = [
         merged_by_key[_entry_key(entry)]
         for entry in sorted(oracle_rollout_entries, key=_entry_index)
         if _entry_key(entry) in merged_by_key
     ]
+    if not existing_by_key:
+        return current
+    # Preserve judged entries outside the current request (e.g. a smaller num_oracle_rollouts
+    # re-run) instead of truncating them out of the cache file on write.
+    current_keys = {_entry_key(entry) for entry in oracle_rollout_entries}
+    extras = [entry for key, entry in existing_by_key.items() if key not in current_keys]
+    extras.sort(key=_entry_index)
+    return current + extras
 
 
 def judge_oracle_rollouts(
@@ -498,6 +509,7 @@ def judge_oracle_rollouts(
                             checkpoint_entries = _materialize_oracle_judge_entries(
                                 oracle_rollout_entries=oracle_rollout_entries,
                                 merged_by_key=merged_by_key,
+                                existing_by_key=existing_by_key,
                             )
                             write_json(cache_file, checkpoint_entries)
                         completed_rollouts = 0
@@ -529,11 +541,18 @@ def judge_oracle_rollouts(
                 merged_by_key=merged_by_key,
                 updates=updates,
             )
+        write_json(
+            cache_file,
+            _materialize_oracle_judge_entries(
+                oracle_rollout_entries=oracle_rollout_entries,
+                merged_by_key=merged_by_key,
+                existing_by_key=existing_by_key,
+            ),
+        )
         final_entries = _materialize_oracle_judge_entries(
             oracle_rollout_entries=oracle_rollout_entries,
             merged_by_key=merged_by_key,
         )
-        write_json(cache_file, final_entries)
 
     if dist_ctx is not None and dist_ctx.enabled:
         final_entries = broadcast_object(dist_ctx, final_entries, src=0)
